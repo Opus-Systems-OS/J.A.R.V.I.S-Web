@@ -30,7 +30,7 @@ type RecognitionEvent = {
   results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
 };
 
-export type ListenerState = "off" | "passive" | "awake" | "paused" | "unsupported" | "denied";
+export type ListenerState = "off" | "passive" | "awake" | "paused" | "unsupported" | "denied" | "unavailable";
 
 export interface ListenerEvents {
   /** A complete request for Jarvis (wake word already stripped). */
@@ -43,6 +43,8 @@ export interface ListenerEvents {
 const WAKE = /\b(?:hey\s+|ok(?:ay)?\s+)?(jarvis|jarvas|jervis)\b[\s,.:!?-]*/i;
 /** How long after Jarvis stops speaking a reply needs no wake word. */
 export const FOLLOW_UP_MS = 10_000;
+/** Consecutive failed starts (nothing heard) before giving up. */
+const MAX_FAILURES = 3;
 /** After a bare "Jarvis", how long to wait for the actual request. */
 const ARMED_MS = 8_000;
 
@@ -71,6 +73,13 @@ export class Listener {
   private restartDelay = 250;
   /** The last command came in without the wake word (a follow-up). */
   private lastWasFollowUp = false;
+  /**
+   * Starts that ended in an error without hearing anything. Browsers that
+   * ship the API without Google's speech service (Arc, Brave, Vivaldi…)
+   * fail every start with `network`; restarting them forever makes the mic
+   * flicker once a second. Reset only when speech is actually heard.
+   */
+  private failures = 0;
 
   constructor(private readonly ev: ListenerEvents) {}
 
@@ -90,23 +99,34 @@ export class Listener {
     rec.maxAlternatives = 1;
     rec.onstart = () => {
       this.running = true;
-      this.restartDelay = 250;
-      this.setState(this.awake() ? "awake" : "passive");
+      if (this.failures === 0) this.setState(this.awake() ? "awake" : "passive");
     };
-    rec.onresult = (e) => this.onResult(e);
+    rec.onresult = (e) => {
+      // Something was heard: the service works.
+      this.failures = 0;
+      this.restartDelay = 250;
+      this.onResult(e);
+    };
     rec.onerror = (e) => {
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      if (e.error === "not-allowed") {
         this.wanted = false;
         this.setState("denied");
+        return;
       }
-      // "no-speech", "network", "aborted": onend restarts.
+      if (e.error === "no-speech" || e.error === "aborted") return; // normal; onend restarts
+      // "network", "service-not-allowed", "audio-capture", "language-not-supported"
+      this.failures += 1;
+      if (this.failures >= MAX_FAILURES) {
+        this.wanted = false;
+        this.setState("unavailable");
+      }
     };
     rec.onend = () => {
       this.running = false;
       if (!this.wanted) return;
-      // Back off if the service keeps failing, up to 5 s.
+      // Back off while the service keeps failing, up to 5 s.
       window.setTimeout(() => this.resume(), this.restartDelay);
-      this.restartDelay = Math.min(this.restartDelay * 2, 5000);
+      this.restartDelay = this.failures ? Math.min(this.restartDelay * 2, 5000) : 250;
     };
     this.rec = rec;
     this.wanted = true;
@@ -115,7 +135,7 @@ export class Listener {
 
   /** Jarvis started talking: stop hearing (his voice is not a command). */
   pause() {
-    if (this.state === "denied" || this.state === "unsupported") return;
+    if (this.state === "denied" || this.state === "unsupported" || this.state === "unavailable") return;
     this.wanted = false;
     this.setState("paused");
     this.ev.onHearing(null);
@@ -132,6 +152,7 @@ export class Listener {
    * the turn he was replying to was itself a follow-up.
    */
   resumeAfterSpeech(askedQuestion: boolean) {
+    if (this.state === "denied" || this.state === "unsupported" || this.state === "unavailable") return;
     this.followUpUntil = askedQuestion && !this.lastWasFollowUp ? Date.now() + FOLLOW_UP_MS : 0;
     this.wanted = true;
     this.resume();
