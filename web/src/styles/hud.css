@@ -1,0 +1,349 @@
+.hud {
+  position: relative;
+  z-index: 10;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.hud.entering {
+  animation: boot 0.9s ease-out both;
+}
+
+@keyframes boot {
+  from {
+    opacity: 0;
+    filter: brightness(2.2) blur(4px);
+  }
+  to {
+    opacity: 1;
+    filter: none;
+  }
+}
+
+/* ---- top bar ------------------------------------------------------------ */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.7rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(to bottom, rgba(28, 12, 3, 0.85), rgba(28, 12, 3, 0.35));
+  backdrop-filter: blur(6px);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.34em;
+  color: var(--accent-3);
+  text-shadow: var(--glow);
+  white-space: nowrap;
+}
+
+.brand-mark {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  box-shadow: var(--glow), inset 0 0 6px var(--accent);
+}
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  flex: 1;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tab {
+  background: none;
+  border: 1px solid transparent;
+  padding: 0.3rem 0.9rem;
+  font-weight: 500;
+  font-size: 0.85rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--accent-3);
+  border-color: var(--line);
+  background: rgba(255, 122, 26, 0.08);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.readouts {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.readout-clock {
+  font-size: 0.95rem;
+  color: var(--accent-3);
+  letter-spacing: 0.08em;
+}
+
+.chip {
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--line);
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.chip::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 0.45rem;
+  border-radius: 50%;
+  background: var(--text-faint);
+  vertical-align: 1px;
+}
+
+.chip[data-state="ok"]::before {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+}
+
+.chip[data-state="down"] {
+  color: var(--alert);
+  border-color: rgba(255, 59, 48, 0.5);
+}
+
+.chip[data-state="down"]::before {
+  background: var(--alert);
+  box-shadow: 0 0 8px var(--alert);
+}
+
+.btn-ghost {
+  background: none;
+  border: 1px solid var(--line);
+  padding: 0.2rem 0.7rem;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.btn-ghost:hover {
+  color: var(--accent-3);
+  border-color: var(--line-strong);
+}
+
+/* ---- stage: three columns around the orb -------------------------------- */
+
+.stage {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(320px, 1.3fr) minmax(260px, 1fr);
+  gap: 1.25rem;
+  padding: 1.25rem;
+  min-height: 0;
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-height: 0;
+}
+
+.center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.orb {
+  width: min(360px, 34vw);
+  aspect-ratio: 1;
+  filter: drop-shadow(0 0 22px rgba(255, 122, 26, 0.5));
+}
+
+.orb svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.orb-caption {
+  margin: 1rem 0 0.2rem;
+  font-weight: 600;
+  font-size: 1.05rem;
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  color: var(--accent-3);
+  text-shadow: var(--glow);
+}
+
+.orb-sub {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  min-height: 1.2em;
+}
+
+/* ---- panels ------------------------------------------------------------- */
+
+.panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  backdrop-filter: blur(8px);
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+}
+
+.panel::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 42%;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent), transparent);
+}
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-title {
+  font-weight: 600;
+  font-size: 0.82rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--accent-2);
+}
+
+.panel-tag {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.panel-body {
+  padding: 0.85rem;
+  overflow: auto;
+  min-height: 0;
+}
+
+.panel-empty {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-faint);
+}
+
+/* ---- dock --------------------------------------------------------------- */
+
+.dock {
+  padding: 0 1.25rem 1rem;
+}
+
+.drawer {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  backdrop-filter: blur(8px);
+}
+
+.drawer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.45rem 0.85rem;
+}
+
+/* ---- narrow screens: stack, orb first ----------------------------------- */
+
+@media (max-width: 960px) {
+  body {
+    overflow: auto;
+  }
+
+  .hud {
+    height: auto;
+    min-height: 100%;
+  }
+
+  .topbar {
+    flex-wrap: wrap;
+    gap: 0.6rem 1rem;
+    padding: 0.6rem 16px;
+  }
+
+  .tabs {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  .brand {
+    flex: 1;
+  }
+
+  .readout:not(.readout-clock) {
+    display: none;
+  }
+
+  /* The link chip keeps only its status dot on a phone. */
+  .chip {
+    font-size: 0;
+    padding: 0.35rem 0.45rem;
+  }
+
+  .chip::before {
+    margin-right: 0;
+  }
+
+  .stage {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 16px;
+  }
+
+  .center {
+    order: -1;
+    padding: 0.5rem 0 1rem;
+  }
+
+  .orb {
+    width: min(260px, 66vw);
+  }
+
+  .dock {
+    padding: 0 16px 16px;
+  }
+}

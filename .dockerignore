@@ -1,0 +1,7 @@
+target
+target.nosync
+web/node_modules
+web/dist
+.git
+*.db
+.env

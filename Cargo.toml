@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["server"]
+
+[workspace.package]
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Password hashing is deliberately slow; unoptimised it makes the tests crawl.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
