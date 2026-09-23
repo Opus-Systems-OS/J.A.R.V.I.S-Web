@@ -10,7 +10,12 @@ const el = <T extends HTMLElement>(id: string): T => {
   return found as T;
 };
 
-export function showLock(onUnlocked: () => void): void {
+/**
+ * `onGesture` runs synchronously inside the submit — the one moment the
+ * browser counts as the user's own action — so audio can be unlocked
+ * before any network wait lets that moment lapse.
+ */
+export function showLock(onUnlocked: () => void, onGesture?: () => void): void {
   const root = el<HTMLElement>("lock");
   const form = el<HTMLFormElement>("lock-form");
   const input = el<HTMLInputElement>("lock-password");
@@ -55,6 +60,7 @@ export function showLock(onUnlocked: () => void): void {
   form.onsubmit = async (event) => {
     event.preventDefault();
     if (Date.now() < lockedUntil || !input.value) return;
+    onGesture?.();
     submit.disabled = true;
     root.classList.remove("denied");
     say("Verifying…");
