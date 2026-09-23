@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { salutation, systemsLine } from "./greeting";
 import { Listener, stripWake } from "./listener";
 import { sentences } from "./speaker";
@@ -110,5 +110,47 @@ describe("listener gating (no ambient chains)", () => {
     l.resumeAfterSpeech(true);
     hear("yeah");
     expect(commands).toEqual(["deploy?"]);
+  });
+});
+
+describe("listener on a browser without the speech service (Arc)", () => {
+  it("stops after three failed starts instead of flickering forever", async () => {
+    vi.useFakeTimers();
+    let starts = 0;
+    class FailingRecognition {
+      continuous = false;
+      interimResults = false;
+      lang = "";
+      maxAlternatives = 1;
+      onstart: (() => void) | null = null;
+      onend: (() => void) | null = null;
+      onerror: ((e: { error: string }) => void) | null = null;
+      onresult: (() => void) | null = null;
+      start() {
+        starts++;
+        queueMicrotask(() => {
+          this.onstart?.();
+          this.onerror?.({ error: "network" });
+          this.onend?.();
+        });
+      }
+      stop() {}
+      abort() {}
+    }
+    const g = globalThis as unknown as Record<string, unknown>;
+    g.window = globalThis;
+    g.webkitSpeechRecognition = FailingRecognition;
+    const states: string[] = [];
+    const l = new Listener({ onCommand: () => {}, onHearing: () => {}, onState: (s) => states.push(s) });
+    l.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(starts).toBe(3);
+    expect(states.at(-1)).toBe("unavailable");
+    // Jarvis speaking afterwards must not bring the loop back.
+    l.resumeAfterSpeech(true);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(starts).toBe(3);
+    delete g.webkitSpeechRecognition;
+    vi.useRealTimers();
   });
 });

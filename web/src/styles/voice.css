@@ -110,12 +110,14 @@ button.orb:focus-visible {
   box-shadow: 0 0 10px var(--accent-3);
 }
 #hud-mic[data-state="denied"],
-#hud-mic[data-state="unsupported"] {
+#hud-mic[data-state="unsupported"],
+#hud-mic[data-state="unavailable"] {
   color: var(--alert);
   border-color: rgba(255, 59, 48, 0.5);
 }
 #hud-mic[data-state="denied"]::before,
-#hud-mic[data-state="unsupported"]::before {
+#hud-mic[data-state="unsupported"]::before,
+#hud-mic[data-state="unavailable"]::before {
   background: var(--alert);
 }
 

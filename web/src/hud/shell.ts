@@ -90,6 +90,7 @@ const MIC_LABEL: Record<ListenerState, string> = {
   paused: "Speaking",
   unsupported: "Voice needs Chrome",
   denied: "Mic blocked",
+  unavailable: "Voice input unavailable here — type below",
 };
 
 const el = <T extends HTMLElement>(root: ParentNode, sel: string): T => {
