@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { salutation, systemsLine } from "./greeting";
-import { stripWake } from "./listener";
+import { Listener, stripWake } from "./listener";
 import { sentences } from "./speaker";
 
 describe("stripWake", () => {
@@ -67,5 +67,48 @@ describe("greeting", () => {
     );
     expect(systemsLine([ok("A"), ok("B"), ok("C")])).toBe("All three systems are online.");
     expect(systemsLine([])).toMatch(/can't reach/);
+  });
+});
+
+describe("listener gating (no ambient chains)", () => {
+  const make = () => {
+    const commands: string[] = [];
+    const l = new Listener({ onCommand: (t) => commands.push(t), onHearing: () => {}, onState: () => {} });
+    const hear = (text: string) => (l as unknown as { onFinal(t: string): void }).onFinal(text);
+    return { l, commands, hear };
+  };
+
+  it("ignores speech without the wake word", () => {
+    const { commands, hear } = make();
+    hear("two plus three makes five");
+    expect(commands).toEqual([]);
+  });
+
+  it("no follow-up after a statement or the greeting", () => {
+    const { l, commands, hear } = make();
+    l.resumeAfterSpeech(false);
+    hear("well now I add in columns");
+    expect(commands).toEqual([]);
+  });
+
+  it("one follow-up after a question, then the wake word again", () => {
+    const { l, commands, hear } = make();
+    hear("Jarvis, start the build");
+    l.resumeAfterSpeech(true); // "Shall I use the rig?"
+    hear("yes use the rig");
+    expect(commands).toEqual(["start the build", "yes use the rig"]);
+    l.resumeAfterSpeech(true); // he asks again — but that turn was a follow-up
+    hear("put that over to the side");
+    expect(commands).toHaveLength(2);
+    hear("Jarvis, status");
+    expect(commands).toEqual(["start the build", "yes use the rig", "status"]);
+  });
+
+  it("a one-word follow-up is not an answer", () => {
+    const { l, commands, hear } = make();
+    hear("Jarvis, deploy?");
+    l.resumeAfterSpeech(true);
+    hear("yeah");
+    expect(commands).toEqual(["deploy?"]);
   });
 });

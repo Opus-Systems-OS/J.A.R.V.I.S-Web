@@ -170,6 +170,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
 
   // ---- orb -----------------------------------------------------------------
   let phase: Phase = "idle";
+  let lastReplyAsked = false; // did Jarvis's last spoken reply end in a question?
   let micState: ListenerState = "off";
   const renderOrb = () => {
     const state = speaker.speaking ? "speaking" : phase === "thinking" ? "thinking" : phase === "error" ? "error" : micState === "awake" ? "listening" : "idle";
@@ -213,7 +214,10 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       if (p === "idle" && !speaker.speaking) sub.textContent = "";
       renderOrb();
     },
-    onReply: (text) => speaker.say(text),
+    onReply: (text) => {
+      lastReplyAsked = /\?["')\]]*\s*$/.test(text.trim());
+      speaker.say(text);
+    },
     onUsage: (cost, cap) => {
       if (cost === null) return;
       meta.textContent = `$${(cost / 100).toFixed(2)}${cap ? ` of $${(cap / 100).toFixed(2)}` : ""}`;
@@ -222,7 +226,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   });
   speaker.onChange((s) => {
     if (s === "speaking") listener.pause();
-    else listener.resumeAfterSpeech();
+    else listener.resumeAfterSpeech(lastReplyAsked);
     renderOrb();
   });
 
@@ -308,6 +312,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   void jarvis.resume();
   void greeting().then((line) => {
     transcript.note(line);
+    lastReplyAsked = false; // the greeting never opens a follow-up
     speaker.say(line);
   });
 
