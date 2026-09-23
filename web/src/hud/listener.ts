@@ -1,9 +1,15 @@
 // Always-on listening. Chrome's speech recognition runs continuously and is
 // restarted whenever it stops on its own (silence, network, the 60 s cap).
 // A turn starts only when an utterance contains the wake word — "Jarvis, …"
-// — or arrives within the follow-up window after Jarvis finishes speaking,
-// so room noise and other people cost nothing. Recognition is paused while
-// Jarvis talks, so his own voice never becomes a turn.
+// — or answers a question Jarvis just asked, so room noise and other
+// people cost nothing. Recognition is paused while Jarvis talks, so his own
+// voice never becomes a turn.
+//
+// The no-wake-word follow-up is deliberately narrow (learned live on
+// 2026-09-23, when a classroom's talk chained turn after turn through an
+// always-open follow-up window): it opens only after a reply that ends in a
+// question, only once in a row — a turn that came in without the wake word
+// never opens another — and it needs at least two words.
 
 // Chrome and Edge ship the API prefixed; Firefox has none.
 type Recognition = {
@@ -63,6 +69,8 @@ export class Listener {
   private armedUntil = 0;
   private state: ListenerState = "off";
   private restartDelay = 250;
+  /** The last command came in without the wake word (a follow-up). */
+  private lastWasFollowUp = false;
 
   constructor(private readonly ev: ListenerEvents) {}
 
@@ -118,9 +126,13 @@ export class Listener {
     }
   }
 
-  /** Jarvis stopped talking: listen again, and open the follow-up window. */
-  resumeAfterSpeech() {
-    this.followUpUntil = Date.now() + FOLLOW_UP_MS;
+  /**
+   * Jarvis stopped talking: listen again. `askedQuestion`: his reply ended
+   * in a question, so the answer may come without the wake word — unless
+   * the turn he was replying to was itself a follow-up.
+   */
+  resumeAfterSpeech(askedQuestion: boolean) {
+    this.followUpUntil = askedQuestion && !this.lastWasFollowUp ? Date.now() + FOLLOW_UP_MS : 0;
     this.wanted = true;
     this.resume();
   }
@@ -182,11 +194,15 @@ export class Listener {
 
   private onFinal(text: string) {
     const { woke, rest } = stripWake(text);
-    const awake = this.awake();
+    const armed = Date.now() < this.armedUntil;
+    const followUp = !woke && !armed && Date.now() < this.followUpUntil;
     this.ev.onHearing(null);
-    if (!woke && !awake) {
+    if (!woke && !armed && !followUp) {
       this.setState("passive");
       return; // not for Jarvis
+    }
+    if (followUp && rest.split(/\s+/).filter(Boolean).length < 2) {
+      return; // a cough, a "yeah" across the room: not an answer
     }
     if (!rest) {
       // Just "Jarvis": wait for the request itself.
@@ -196,6 +212,7 @@ export class Listener {
     }
     this.armedUntil = 0;
     this.followUpUntil = 0;
+    this.lastWasFollowUp = followUp;
     this.setState("passive");
     this.ev.onCommand(rest);
   }
