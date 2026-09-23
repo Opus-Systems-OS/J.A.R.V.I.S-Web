@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#0b0603" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>J.A.R.V.I.S.</title>
+  </head>
+  <body>
+    <div class="backdrop" aria-hidden="true"></div>
+    <div class="scanlines" aria-hidden="true"></div>
+
+    <!-- The lock is always what a fresh load shows. -->
+    <main id="lock" class="lock">
+      <div class="reactor" aria-hidden="true">
+        <svg viewBox="0 0 200 200">
+          <circle class="ring ring-outer" cx="100" cy="100" r="92" />
+          <circle class="ring ring-ticks" cx="100" cy="100" r="82" />
+          <circle class="ring ring-mid" cx="100" cy="100" r="68" />
+          <circle class="ring ring-inner" cx="100" cy="100" r="52" />
+          <circle class="ring ring-core-edge" cx="100" cy="100" r="34" />
+          <circle class="core" cx="100" cy="100" r="22" />
+        </svg>
+      </div>
+      <h1 class="wordmark">J.A.R.V.I.S.</h1>
+      <p class="tagline">Just A Rather Very Intelligent System</p>
+      <form id="lock-form" class="lock-form" autocomplete="off">
+        <label class="frame" for="lock-password">
+          <span class="frame-label">Voice print unavailable — passphrase required</span>
+          <input
+            id="lock-password"
+            type="password"
+            autocomplete="current-password"
+            spellcheck="false"
+            aria-label="Passphrase"
+            required
+          />
+        </label>
+        <button id="lock-submit" type="submit" class="btn-primary">Authenticate</button>
+        <p id="lock-status" class="lock-status" role="status" aria-live="polite"></p>
+      </form>
+      <footer class="lock-footer">Opus Systems OS · jarvis.opustower.dev</footer>
+    </main>
+
+    <div id="hud" class="hud" hidden></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
