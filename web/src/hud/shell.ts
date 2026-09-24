@@ -403,9 +403,20 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       link.textContent = "Link down";
     });
 
+  // The window you're using gets the mic: this one on unlock (you just typed
+  // the passphrase here), and any HUD you switch back to.
+  const takeOnFocus = () => {
+    if (document.visibilityState === "visible" && document.hasFocus() && !lease.held) void lease.claim(true);
+  };
+  window.addEventListener("focus", takeOnFocus);
+  document.addEventListener("visibilitychange", takeOnFocus);
+  const firstClaim = lease.claim(true).then((held) => {
+    renderMic();
+    return held;
+  });
   lease.start();
   void jarvis.resume();
-  void Promise.all([greeting(), lease.claim(false)]).then(([line, held]) => {
+  void Promise.all([greeting(), firstClaim]).then(([line, held]) => {
     transcript.note(line);
     lastReplyAsked = false; // the greeting never opens a follow-up
     // Only the HUD with the mic speaks it; another open window just shows it.
@@ -417,6 +428,8 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       timers.forEach((t) => window.clearInterval(t));
       cancelAnimationFrame(raf);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("focus", takeOnFocus);
+      document.removeEventListener("visibilitychange", takeOnFocus);
       lease.onChange(null);
       lease.stop();
       listener.stop();
