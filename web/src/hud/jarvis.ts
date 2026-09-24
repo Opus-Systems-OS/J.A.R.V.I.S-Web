@@ -40,6 +40,8 @@ export interface JarvisEvents {
   /** A finished reply to speak (never history). */
   onReply(text: string): void;
   onUsage(costCents: number | null, capCents: number | null): void;
+  /** This session hit Anthropic's billing error (credit exhausted). */
+  onBillingError?(): void;
   openPanel(tab: string): void;
   /** Every event of the conversation, for other views (the terminal). */
   onEvent?(e: SessionEvent, live: boolean): void;
@@ -245,6 +247,7 @@ export class Jarvis {
         this.busy = false;
         if (r.type === "billing_error") {
           this.ev.onReply("I'm afraid the Anthropic account is out of credit, sir. I can't think until it's topped up.");
+          this.ev.onBillingError?.();
         }
         this.ev.onPhase("error", r.message);
         break;

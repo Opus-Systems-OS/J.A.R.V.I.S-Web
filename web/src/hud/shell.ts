@@ -5,6 +5,7 @@
 // the session bookmark Jarvis keeps.
 
 import { get, lock, type Me } from "../api";
+import { CreditWatch, creditLine, dollars, fishDollars, level, type Credits } from "./credits";
 import { ago, FleetView } from "./fleet";
 import { greeting } from "./greeting";
 import { Jarvis, MODELS, type Phase } from "./jarvis";
@@ -15,6 +16,7 @@ import { SystemsView } from "./systems";
 import { TerminalView, terminalTask } from "./terminal";
 import { compactOps } from "./tools";
 import { Transcript } from "./transcript";
+import { isoSeconds, UsageView } from "./usage";
 
 const TABS = ["HUD", "Fleet", "Systems", "Usage", "Terminal"] as const;
 const DRAWER_KEY = "jarvis.drawer";
@@ -49,6 +51,11 @@ const TEMPLATE = `
       <button class="btn-ghost" id="hud-lock" title="Lock">Lock</button>
     </div>
   </header>
+  <div class="banner" id="hud-banner" role="status">
+    <span class="banner-text" id="hud-banner-text"></span>
+    <button class="btn-ghost" id="hud-banner-usage">Usage</button>
+    <button class="btn-ghost" id="hud-banner-close" aria-label="Dismiss">Dismiss</button>
+  </div>
   <div class="views">
   <div class="stage" data-view="HUD">
     <aside class="column column-left">
@@ -61,12 +68,12 @@ const TEMPLATE = `
     </div>
     <aside class="column column-right">
       ${PANEL("panel-systems", "Systems", `<ul class="rows" id="systems-rows"><li class="panel-empty">Reading the tower…</li></ul>`)}
-      ${PANEL("panel-usage", "Usage", `<p class="panel-empty">Spend and credits come online in a later module.</p>`)}
+      ${PANEL("panel-usage", "Usage", `<ul class="rows" id="usage-rows"><li class="panel-empty">Reading the ledger…</li></ul>`)}
     </aside>
   </div>
   <div class="view" data-view="Fleet" id="view-fleet" hidden></div>
   <div class="view" data-view="Systems" id="view-systems" hidden></div>
-  <div class="view view-soon" data-view="Usage" hidden><p class="panel-empty">Spend, credits and warnings arrive in the next module.</p></div>
+  <div class="view" data-view="Usage" id="view-usage" hidden></div>
   <div class="view" data-view="Terminal" id="view-terminal" hidden></div>
   </div>
   <div class="dock">
@@ -154,6 +161,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   // ---- views ---------------------------------------------------------------
   const fleetView = new FleetView($("#view-fleet"));
   const systemsView = new SystemsView($("#view-systems"));
+  const usageView = new UsageView($("#view-usage"), (c) => watch.observe(c));
   let current = "HUD";
   const openPanel = (tab: string) => {
     root.querySelectorAll<HTMLButtonElement>(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.tab === tab)));
@@ -161,9 +169,11 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     root.dataset.tab = tab;
     if (current === "Fleet") fleetView.hide();
     if (current === "Systems") systemsView.hide();
+    if (current === "Usage") usageView.hide();
     current = tab;
     if (tab === "Fleet") fleetView.show();
     if (tab === "Systems") systemsView.show();
+    if (tab === "Usage") usageView.show();
     if (tab === "Terminal") terminal.focus();
   };
   root.querySelectorAll<HTMLButtonElement>(".tab").forEach((b) => (b.onclick = () => openPanel(b.dataset.tab ?? "HUD")));
@@ -278,6 +288,11 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     },
     openPanel,
     onEvent: (e) => terminal.feed(e),
+    onBillingError: () => {
+      watch.markExhausted();
+      setBanner("exhausted", "The Anthropic account is out of credit. Top up, then set the new balance in Usage.");
+      void watch.poll();
+    },
   });
   speaker.onChange((s) => {
     if (s === "speaking") listener.pause();
@@ -357,6 +372,90 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   void renderSystems();
   timers.push(window.setInterval(() => void renderSystems(), 60_000));
 
+  // ---- credits: banner, Usage panel, spoken warnings ---------------------------
+  const banner = $<HTMLDivElement>("#hud-banner");
+  let dismissed = "";
+  const setBanner = (lvl: string, text: string) => {
+    if (lvl === "ok" || !text) {
+      delete banner.dataset.level;
+      dismissed = "";
+      return;
+    }
+    if (dismissed === `${lvl}:${text}`) return;
+    banner.dataset.level = lvl;
+    $("#hud-banner-text").textContent = text;
+  };
+  $<HTMLButtonElement>("#hud-banner-close").onclick = () => {
+    dismissed = `${banner.dataset.level}:${$("#hud-banner-text").textContent}`;
+    delete banner.dataset.level;
+  };
+  $<HTMLButtonElement>("#hud-banner-usage").onclick = () => openPanel("Usage");
+
+  const usageRows = $<HTMLUListElement>("#usage-rows");
+  let spent24h: number | null = null;
+  const row = (name: string, detail: string, state: string) => {
+    const li = document.createElement("li");
+    li.className = "row";
+    li.dataset.state = state;
+    const n = document.createElement("span");
+    n.className = "row-name";
+    n.textContent = name;
+    const d = document.createElement("span");
+    d.className = "row-detail";
+    d.textContent = detail;
+    li.append(n, d);
+    li.onclick = () => openPanel("Usage");
+    return li;
+  };
+  let lastCredits: Credits | null = null;
+  const renderUsagePanel = () => {
+    const c = lastCredits;
+    const rows: HTMLLIElement[] = [];
+    if (c) {
+      const a = c.anthropic;
+      rows.push(
+        row(
+          "Anthropic",
+          a.exhausted ? "out of credit" : a.remaining_cents !== null ? `≈ ${dollars(a.remaining_cents)} est.` : a.error ? "unavailable" : "balance not set",
+          a.exhausted ? "down" : a.low ? "warn" : a.remaining_cents !== null ? "ok" : "idle",
+        ),
+      );
+      rows.push(row("Voice", c.fish.credit_usd !== null ? `${fishDollars(c.fish.credit_usd)} Fish credit` : "unavailable", c.fish.error ? "idle" : c.fish.low ? "warn" : "ok"));
+    }
+    if (spent24h !== null) rows.push(row("Fleet", `${dollars(spent24h)} in 24 h`, "ok"));
+    if (rows.length) usageRows.replaceChildren(...rows);
+    const tag = root.querySelector<HTMLElement>("#panel-usage [data-tag]");
+    if (tag && c) tag.textContent = level(c) === "ok" ? "nominal" : level(c);
+  };
+  const refresh24h = async () => {
+    try {
+      const u = await get<{ by_agent: { total_list_cost_cents: number }[] }>(`usage?since=${isoSeconds(new Date(Date.now() - 86_400_000))}`);
+      spent24h = u.by_agent.reduce((s, a) => s + (a.total_list_cost_cents || 0), 0);
+      renderUsagePanel();
+    } catch {
+      /* the credit rows still show */
+    }
+  };
+  void refresh24h();
+  timers.push(window.setInterval(() => void refresh24h(), 5 * 60_000));
+
+  const watch = new CreditWatch({
+    onCredits: (c) => {
+      lastCredits = c;
+      renderUsagePanel();
+      usageView.setCredits(c);
+      setBanner(level(c), creditLine(c) ?? "");
+    },
+    onWarn: (line) => {
+      transcript.note(line);
+      // Only the HUD with the mic speaks, like the greeting.
+      if (lease.held) {
+        lastReplyAsked = false;
+        speaker.say(line);
+      }
+    },
+  });
+
   // ---- recent sessions (HUD's Fleet panel) ----------------------------------
   const recent = $<HTMLUListElement>("#recent-rows");
   const renderRecent = async () => {
@@ -415,6 +514,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     return held;
   });
   lease.start();
+  watch.start();
   void jarvis.resume();
   void Promise.all([greeting(), firstClaim]).then(([line, held]) => {
     transcript.note(line);
@@ -438,6 +538,8 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       jarvis.detach();
       fleetView.dispose();
       systemsView.dispose();
+      usageView.dispose();
+      watch.stop();
     },
   };
 }
