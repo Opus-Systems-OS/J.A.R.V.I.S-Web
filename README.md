@@ -39,6 +39,7 @@ server/src/lib.rs      app(): /auth, /bff, static page, security headers
 server/src/auth.rs     unlock, cookie, rate limits, CSRF header (x-jarvis: 1)
 server/src/bff.rs      allowlisted passthrough to the API (SSE streams through)
 server/src/db.rs       SQLite: web_sessions, login_failures
+server/src/mic.rs      the one-HUD-listens lease (memory only)
 server/tests/web.rs    contract tests through the real router, API stubbed
 web/                   Vite + TypeScript page (no framework), self-hosted fonts
 Dockerfile             page build → server build → debian-slim
@@ -86,10 +87,13 @@ ssh -t root@198.199.66.109 "cd /opt/iron-fleet/deploy/droplet && docker compose 
 Do not start a stage before the one above it works live.
 
 1. **Skeleton that deploys.** Lock screen, unlock, `/bff`, and an empty HUD at
-   `jarvis.opustower.dev`.
+   `jarvis.opustower.dev`. *Live 2026-09-23.*
 2. **Jarvis himself.** Always-on voice (wake word), Fish speech, a
    minimizable transcript, the model picker, and the sandbox (repos, browser).
-3. **Fleet, Systems map, Terminal.**
+   *Live 2026-09-23.* Voice uses Chrome's recognition, or "cloud ears" (Fish
+   speech-to-text) in Arc, Safari and Firefox.
+3. **Fleet, Systems map, Terminal.** One HUD holds the mic at a time
+   (`/web/mic`).
 4. **Usage tab and credit warnings.**
 5. **Briefing, sources, reminders.** Gmail, Calendar, YouTube, Whoop, Roblox
    and Buffer.

@@ -14,6 +14,7 @@ pub mod bff;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod mic;
 pub mod request_id;
 
 use axum::http::{header, HeaderName, HeaderValue};
@@ -31,6 +32,7 @@ pub struct AppState {
     pub config: Config,
     pub db: db::Db,
     pub http: reqwest::Client,
+    pub mic: std::sync::Arc<mic::Lease>,
 }
 
 impl AppState {
@@ -38,7 +40,12 @@ impl AppState {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .build()?;
-        Ok(AppState { config, db, http })
+        Ok(AppState {
+            config,
+            db,
+            http,
+            mic: std::sync::Arc::default(),
+        })
     }
 }
 
@@ -93,6 +100,7 @@ pub fn app(state: AppState) -> Router {
     let bff = Router::new()
         .route("/bff/v1/{*rest}", any(bff::proxy))
         .route("/auth/logout", post(auth::logout))
+        .route("/web/mic", post(mic::mic))
         .route_layer(from_fn_with_state(state.clone(), auth::require_session));
 
     let api = Router::new()

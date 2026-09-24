@@ -24,6 +24,8 @@ export interface SessionEvent {
   delta?: { type: string; index: number; content?: ContentBlock };
   /** On `user.custom_tool_result`: which tool call it answers. */
   custom_tool_use_id?: string;
+  /** On `agent.tool_result`: which `agent.tool_use` it answers. */
+  tool_use_id?: string;
 }
 
 export interface ContentBlock {
@@ -87,7 +89,10 @@ export class Transcript {
     switch (ev.type) {
       case "user.message": {
         const text = textOf(ev.content);
-        this.append("entry-user", text, ev.id);
+        // Terminal commands carry an instruction; show just the command.
+        const term = text.startsWith("[terminal]") ? text.split("\n").slice(1).join("\n").trim() : null;
+        if (term !== null) this.append("entry-system entry-term", `$ ${term}`, ev.id);
+        else this.append("entry-user", text, ev.id);
         out = { kind: "user_message", text };
         break;
       }

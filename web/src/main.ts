@@ -6,6 +6,7 @@ import "./styles/base.css";
 import "./styles/lock.css";
 import "./styles/hud.css";
 import "./styles/voice.css";
+import "./styles/views.css";
 
 import { LOCKED_EVENT } from "./api";
 import { showLock } from "./lock";
