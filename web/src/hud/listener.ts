@@ -70,6 +70,15 @@ function saveEngine(e: Engine) {
 const WAKE = /\b(?:hey\s+|ok(?:ay)?\s+)?(jarvis|jarvas|jervis)\b[\s,.:!?-]*/i;
 /** How long after Jarvis stops speaking a reply needs no wake word. */
 export const FOLLOW_UP_MS = 10_000;
+/**
+ * Quiet time that ends a request. Both engines break speech at natural
+ * pauses ("Jarvis, I just did some research" … "on black widows"); pieces
+ * arriving within this window join the request instead of being dropped as
+ * speech without a wake word (seen live 2026-09-24).
+ */
+export const ASSEMBLE_MS = 1_300;
+/** The same request twice within this window is sent once. */
+const REPEAT_MS = 4_000;
 /** Consecutive failed starts (nothing heard) before giving up. */
 const MAX_FAILURES = 3;
 /** After a bare "Jarvis", how long to wait for the actual request. */
@@ -108,6 +117,12 @@ export class Listener {
    * flicker once a second. Reset only when speech is actually heard.
    */
   private failures = 0;
+  /** A request being assembled: text so far, and when to send it. */
+  private pending: string | null = null;
+  private flushTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastSent = { text: "", at: 0 };
+  /** Cloud ears hear speech right now (the text arrives after it ends). */
+  private speaking = false;
 
   constructor(private readonly ev: ListenerEvents) {}
 
@@ -128,6 +143,13 @@ export class Listener {
     this.ears = new CloudEars({
       started: () => this.setState(this.awake() ? "awake" : "passive"),
       hearing: (active) => {
+        this.speaking = active;
+        if (this.pending !== null) {
+          // Still talking: hold the request open; silence restarts the clock.
+          if (active) clearTimeout(this.flushTimer);
+          else this.scheduleFlush();
+          return;
+        }
         if (active && this.awake()) this.ev.onHearing("…");
         if (!active) this.ev.onHearing(null);
       },
@@ -207,7 +229,7 @@ export class Listener {
     if (this.state === "denied" || this.state === "unsupported" || this.state === "unavailable") return;
     this.wanted = false;
     this.setState("paused");
-    this.ev.onHearing(null);
+    this.dropPending();
     this.ears?.pause();
     try {
       this.rec?.abort();
@@ -254,7 +276,15 @@ export class Listener {
     this.rec = null;
     this.ears?.stop();
     this.ears = null;
+    this.dropPending();
     this.setState("off");
+  }
+
+  private dropPending() {
+    clearTimeout(this.flushTimer);
+    this.pending = null;
+    this.speaking = false;
+    this.ev.onHearing(null);
   }
 
   private resume() {
@@ -283,6 +313,12 @@ export class Listener {
       this.onFinal(text);
     }
     if (interim) {
+      if (this.pending !== null) {
+        // More of the same request is coming: wait for it.
+        this.scheduleFlush();
+        this.ev.onHearing(`${this.pending} ${interim.trim()}`);
+        return;
+      }
       const { woke, rest } = stripWake(interim);
       if (woke || this.awake()) {
         this.setState("awake");
@@ -291,7 +327,33 @@ export class Listener {
     }
   }
 
+  private scheduleFlush() {
+    clearTimeout(this.flushTimer);
+    // Never close a request while speech is still coming in; the end of
+    // that speech schedules the flush.
+    if (this.speaking) return;
+    this.flushTimer = setTimeout(() => this.flush(), ASSEMBLE_MS);
+  }
+
+  private flush() {
+    const text = (this.pending ?? "").replace(/\s+/g, " ").trim();
+    this.pending = null;
+    this.ev.onHearing(null);
+    if (!text) return;
+    const now = Date.now();
+    if (text.toLowerCase() === this.lastSent.text && now - this.lastSent.at < REPEAT_MS) return;
+    this.lastSent = { text: text.toLowerCase(), at: now };
+    this.ev.onCommand(text);
+  }
+
   private onFinal(text: string) {
+    if (this.pending !== null) {
+      // The next piece of a request already under way: no wake word needed.
+      this.pending = `${this.pending} ${text.trim()}`;
+      this.ev.onHearing(this.pending);
+      this.scheduleFlush();
+      return;
+    }
     const { woke, rest } = stripWake(text);
     const armed = Date.now() < this.armedUntil;
     const followUp = !woke && !armed && Date.now() < this.followUpUntil;
@@ -312,8 +374,11 @@ export class Listener {
     this.armedUntil = 0;
     this.followUpUntil = 0;
     this.lastWasFollowUp = followUp;
-    this.setState("passive");
-    this.ev.onCommand(rest);
+    this.setState("awake");
+    // Don't send yet: the sentence may continue after a pause.
+    this.pending = rest;
+    this.ev.onHearing(rest);
+    this.scheduleFlush();
   }
 
   private setState(s: ListenerState) {
