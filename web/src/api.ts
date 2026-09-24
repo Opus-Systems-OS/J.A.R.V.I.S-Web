@@ -72,6 +72,30 @@ export async function post<T>(apiPath: string, body?: unknown): Promise<T> {
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
+/** A binary body (a recording) with its own content type; JSON back. */
+export async function postAudio<T>(apiPath: string, body: ArrayBuffer, contentType: string): Promise<T> {
+  const res = await fetch(`/bff/v1/${apiPath}`, {
+    method: "POST",
+    headers: { "x-jarvis": "1", "content-type": contentType },
+    body,
+    credentials: "same-origin",
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let env: ErrorEnvelope = { type: "internal", message: res.statusText || `HTTP ${res.status}` };
+    try {
+      const json = await res.json();
+      if (json?.error?.type) env = json.error;
+    } catch {
+      /* not JSON */
+    }
+    if (res.status === 401) window.dispatchEvent(new CustomEvent(LOCKED_EVENT));
+    const ra = Number(res.headers.get("retry-after"));
+    throw new ApiError(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : null);
+  }
+  return (await res.json()) as T;
+}
+
 /** Raw response, for binary bodies (speech) and streams. */
 export function raw(method: string, apiPath: string, body?: unknown): Promise<Response> {
   return request(method, `/bff/v1/${apiPath}`, body);
