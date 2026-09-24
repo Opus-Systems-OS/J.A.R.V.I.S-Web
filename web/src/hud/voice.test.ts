@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { salutation, systemsLine } from "./greeting";
-import { Listener, stripWake } from "./listener";
+import { ASSEMBLE_MS, Listener, stripWake } from "./listener";
 import { sentences } from "./speaker";
 
 describe("stripWake", () => {
@@ -72,11 +72,16 @@ describe("greeting", () => {
 
 describe("listener gating (no ambient chains)", () => {
   const make = () => {
+    vi.useFakeTimers();
     const commands: string[] = [];
     const l = new Listener({ onCommand: (t) => commands.push(t), onHearing: () => {}, onState: () => {} });
-    const hear = (text: string) => (l as unknown as { onFinal(t: string): void }).onFinal(text);
+    const hear = (text: string) => {
+      (l as unknown as { onFinal(t: string): void }).onFinal(text);
+      vi.advanceTimersByTime(ASSEMBLE_MS + 10); // a pause long enough to end the request
+    };
     return { l, commands, hear };
   };
+  afterEach(() => vi.useRealTimers());
 
   it("ignores speech without the wake word", () => {
     const { commands, hear } = make();
@@ -110,6 +115,72 @@ describe("listener gating (no ambient chains)", () => {
     l.resumeAfterSpeech(true);
     hear("yeah");
     expect(commands).toEqual(["deploy?"]);
+  });
+});
+
+describe("request assembly (long sentences)", () => {
+  afterEach(() => vi.useRealTimers());
+  const setup = () => {
+    vi.useFakeTimers();
+    const commands: string[] = [];
+    const l = new Listener({ onCommand: (t) => commands.push(t), onHearing: () => {}, onState: () => {} });
+    const final = (t: string) => (l as unknown as { onFinal(t: string): void }).onFinal(t);
+    return { l, commands, final };
+  };
+
+  it("joins the pieces of a sentence split at a pause", () => {
+    const { commands, final } = setup();
+    final("Jarvis, I just conducted research");
+    vi.advanceTimersByTime(800); // a thinking pause, shorter than the window
+    final("on black widow venom");
+    vi.advanceTimersByTime(600);
+    final("and found significant overlap with other spiders");
+    expect(commands).toEqual([]); // still assembling
+    vi.advanceTimersByTime(ASSEMBLE_MS + 10);
+    expect(commands).toEqual([
+      "I just conducted research on black widow venom and found significant overlap with other spiders",
+    ]);
+  });
+
+  it("speech still in progress holds the request open", () => {
+    const { l, commands, final } = setup();
+    final("Jarvis, summarise the control plane");
+    const interim = (t: string) =>
+      (l as unknown as { onResult(e: unknown): void }).onResult({
+        resultIndex: 0,
+        results: [{ isFinal: false, 0: { transcript: t } }],
+      });
+    for (let i = 0; i < 5; i++) {
+      vi.advanceTimersByTime(1_000);
+      interim("and its sessions module"); // still talking
+    }
+    expect(commands).toEqual([]);
+    final("and its sessions module");
+    vi.advanceTimersByTime(ASSEMBLE_MS + 10);
+    expect(commands).toEqual(["summarise the control plane and its sessions module"]);
+  });
+
+  it("cloud ears: a request never closes while the next phrase is being spoken", () => {
+    const { l, commands, final } = setup();
+    const hearing = (active: boolean) => (l as unknown as { speaking: boolean }).speaking = active;
+    hearing(true); // phrase 2 already under way…
+    final("Jarvis, compare the two genomes"); // …when phrase 1's text comes back
+    vi.advanceTimersByTime(5_000);
+    expect(commands).toEqual([]);
+    hearing(false);
+    (l as unknown as { scheduleFlush(): void }).scheduleFlush(); // what the engine's hearing(false) does
+    final("for venom genes"); // phrase 2's text
+    vi.advanceTimersByTime(ASSEMBLE_MS + 10);
+    expect(commands).toEqual(["compare the two genomes for venom genes"]);
+  });
+
+  it("the same request twice in a row is sent once", () => {
+    const { commands, final } = setup();
+    final("Jarvis, this is a test");
+    vi.advanceTimersByTime(ASSEMBLE_MS + 10);
+    final("Jarvis, this is a test");
+    vi.advanceTimersByTime(ASSEMBLE_MS + 10);
+    expect(commands).toEqual(["this is a test"]);
   });
 });
 
