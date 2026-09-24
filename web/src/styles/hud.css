@@ -3,8 +3,68 @@
   z-index: 10;
   height: 100%;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto auto 1fr auto;
   grid-template-columns: minmax(0, 1fr);
+}
+
+/* Rows are placed explicitly so the banner's row simply collapses when it
+   is hidden. */
+.topbar {
+  grid-row: 1;
+}
+.banner {
+  grid-row: 2;
+}
+.views {
+  grid-row: 3;
+}
+.dock {
+  grid-row: 4;
+}
+
+/* ---- credit banner ------------------------------------------------------- */
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1.25rem;
+  border-bottom: 1px solid var(--warn);
+  background: rgba(255, 210, 63, 0.08);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.banner:not([data-level]) {
+  display: none;
+}
+
+.banner::before {
+  content: "!";
+  display: inline-grid;
+  place-items: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  flex: none;
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.banner[data-level="exhausted"] {
+  border-bottom-color: var(--alert);
+  background: rgba(255, 59, 48, 0.1);
+}
+
+.banner[data-level="exhausted"]::before {
+  border-color: var(--alert);
+  color: var(--alert);
+}
+
+.banner-text {
+  flex: 1;
+  min-width: 0;
 }
 
 .hud.entering {
@@ -345,5 +405,10 @@
 
   .dock {
     padding: 0 16px 16px;
+  }
+
+  .banner {
+    padding: 0.5rem 16px;
+    flex-wrap: wrap;
   }
 }

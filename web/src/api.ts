@@ -45,7 +45,7 @@ async function request(method: string, path: string, body?: unknown): Promise<Re
       /* not JSON — keep the status text */
     }
     const ra = Number(res.headers.get("retry-after"));
-    if (res.status === 401 && path.startsWith("/bff/")) {
+    if (res.status === 401 && (path.startsWith("/bff/") || path.startsWith("/web/"))) {
       window.dispatchEvent(new CustomEvent(LOCKED_EVENT));
     }
     throw new ApiError(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : null);
@@ -75,6 +75,12 @@ export async function web<T>(path: string, body: unknown, keepalive = false): Pr
     return undefined as T;
   }
   const res = await request("POST", `/web/${path}`, body);
+  return (await res.json()) as T;
+}
+
+/** `GET /web/*`: this site's own reads (the credit ledger). */
+export async function webGet<T>(path: string): Promise<T> {
+  const res = await request("GET", `/web/${path}`);
   return (await res.json()) as T;
 }
 

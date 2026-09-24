@@ -30,9 +30,31 @@ fn password_hash() -> String {
 /// What the stub API saw: (method, path+query, authorization, body).
 type Seen = Arc<Mutex<Vec<(String, String, String, String)>>>;
 
+/// What the stub's `/v1/usage` and `/v1/voice/credit` answer; tests set it.
+#[derive(Clone)]
+struct Knobs {
+    usage: Arc<Mutex<Value>>,
+    /// `None` = Fish is failing (the API's 502).
+    credit: Arc<Mutex<Option<Value>>>,
+}
+
+impl Default for Knobs {
+    fn default() -> Self {
+        Knobs {
+            usage: Arc::new(Mutex::new(
+                json!({"window": {}, "by_agent": [], "recent": []}),
+            )),
+            credit: Arc::new(Mutex::new(Some(
+                json!({"credit_usd": "12.34", "checked_at": "2026-09-24T00:00:00Z"}),
+            ))),
+        }
+    }
+}
+
 struct Harness {
     app: Router,
     seen: Seen,
+    knobs: Knobs,
     _static_dir: tempdir::Dir,
 }
 
@@ -59,7 +81,7 @@ mod tempdir {
     }
 }
 
-async fn stub_api(seen: Seen) -> String {
+async fn stub_api(seen: Seen, knobs: Knobs) -> String {
     async fn record(seen: &Seen, req: AxumRequest) -> (String, HeaderMap) {
         let (parts, body) = req.into_parts();
         let body = String::from_utf8(body.collect().await.unwrap().to_bytes().to_vec()).unwrap();
@@ -78,7 +100,32 @@ async fn stub_api(seen: Seen) -> String {
     let s1 = seen.clone();
     let s2 = seen.clone();
     let s3 = seen.clone();
+    let s4 = seen.clone();
+    let s5 = seen.clone();
+    let k4 = knobs.clone();
+    let k5 = knobs;
     let router = Router::new()
+        .route(
+            "/v1/usage",
+            get(move |req: AxumRequest| async move {
+                record(&s4, req).await;
+                axum::Json(k4.usage.lock().unwrap().clone())
+            }),
+        )
+        .route(
+            "/v1/voice/credit",
+            get(move |req: AxumRequest| async move {
+                record(&s5, req).await;
+                match k5.credit.lock().unwrap().clone() {
+                    Some(v) => axum::Json(v).into_response(),
+                    None => (
+                        StatusCode::BAD_GATEWAY,
+                        axum::Json(json!({"error": {"type": "upstream", "message": "voice credits are exhausted", "request_id": "req_up"}})),
+                    )
+                        .into_response(),
+                }
+            }),
+        )
         .route(
             "/v1/me",
             get(move |req: AxumRequest| async move {
@@ -131,7 +178,8 @@ async fn stub_api(seen: Seen) -> String {
 
 async fn harness() -> Harness {
     let seen: Seen = Arc::default();
-    let api_url = stub_api(seen.clone()).await;
+    let knobs = Knobs::default();
+    let api_url = stub_api(seen.clone(), knobs.clone()).await;
     let dir = tempdir::new();
     let config = Config {
         port: 0,
@@ -146,6 +194,7 @@ async fn harness() -> Harness {
     Harness {
         app: app(state),
         seen,
+        knobs,
         _static_dir: dir,
     }
 }
@@ -518,4 +567,146 @@ async fn one_hud_holds_the_mic() {
         h.seen.lock().unwrap().is_empty(),
         "the lease never touches the API"
     );
+}
+
+#[tokio::test]
+async fn credits_need_an_unlock() {
+    let h = harness().await;
+    let r = send(&h, bff(Method::GET, "/web/credits", None, None)).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/credits",
+            None,
+            Some(json!({"anchor_cents": 900})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert!(h.seen.lock().unwrap().is_empty(), "nothing reached the API");
+}
+
+#[tokio::test]
+async fn credits_ledger_end_to_end() {
+    let h = harness().await;
+    let cookie = unlock(&h).await;
+
+    // No anchor yet: Fish is read, Anthropic has no verdict.
+    let r = send(&h, bff(Method::GET, "/web/credits", Some(&cookie), None)).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let j = r.json();
+    assert_eq!(j["anthropic"]["anchor_cents"], Value::Null);
+    assert_eq!(j["anthropic"]["low"], false);
+    assert_eq!(j["anthropic"]["estimate"], true);
+    assert_eq!(j["anthropic"]["warn_below_cents"], 1000);
+    assert_eq!(j["fish"]["credit_usd"], "12.34");
+    assert_eq!(j["fish"]["low"], false);
+    {
+        let seen = h.seen.lock().unwrap();
+        let usage = seen
+            .iter()
+            .find(|(_, p, _, _)| p.starts_with("/v1/usage"))
+            .unwrap();
+        assert_eq!(usage.1, "/v1/usage", "unwindowed without an anchor");
+        assert_eq!(usage.2, format!("Bearer {WEB_KEY}"), "the site's own key");
+    }
+
+    // Anchor $9 with $1.50 spent since: $7.50 left, under the $10 line.
+    *h.knobs.usage.lock().unwrap() = json!({"by_agent": [
+        {"agent_slug": "jarvis", "session_count": 2, "total_list_cost_cents": 100, "budget_reached_count": 0},
+        {"agent_slug": "gpu-compute", "session_count": 1, "total_list_cost_cents": 50, "budget_reached_count": 0}
+    ], "recent": []});
+    h.seen.lock().unwrap().clear();
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/credits",
+            Some(&cookie),
+            Some(json!({"anchor_cents": 900})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let j = r.json();
+    assert_eq!(j["anthropic"]["anchor_cents"], 900);
+    assert_eq!(j["anthropic"]["spent_since_cents"], 150);
+    assert_eq!(j["anthropic"]["remaining_cents"], 750);
+    assert_eq!(j["anthropic"]["low"], true);
+    assert_eq!(j["anthropic"]["exhausted"], false);
+    let anchored_at = j["anthropic"]["anchored_at"].as_str().unwrap().to_owned();
+    {
+        let seen = h.seen.lock().unwrap();
+        let usage = seen
+            .iter()
+            .find(|(_, p, _, _)| p.starts_with("/v1/usage"))
+            .unwrap();
+        assert_eq!(
+            usage.1,
+            format!("/v1/usage?since={anchored_at}"),
+            "windowed at the anchor"
+        );
+    }
+
+    // The newest session died on billing: exhausted, until one runs again.
+    *h.knobs.usage.lock().unwrap() = json!({"by_agent": [], "recent": [
+        {"session_id": "sesn_b", "last_error": "billing_error: credit balance is too low", "observed_at": "2026-09-24T10:00:00Z"}
+    ]});
+    let j = send(&h, bff(Method::GET, "/web/credits", Some(&cookie), None))
+        .await
+        .json();
+    assert_eq!(j["anthropic"]["exhausted"], true);
+    assert_eq!(j["anthropic"]["billing_error_at"], "2026-09-24T10:00:00Z");
+
+    // Thresholds are editable; Fish failing leaves the Anthropic half intact.
+    *h.knobs.credit.lock().unwrap() = None;
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/credits",
+            Some(&cookie),
+            Some(json!({"anthropic_warn_cents": 500, "fish_warn_cents": 100})),
+        ),
+    )
+    .await;
+    let j = r.json();
+    assert_eq!(j["anthropic"]["warn_below_cents"], 500);
+    assert_eq!(j["anthropic"]["anchor_cents"], 900, "anchor untouched");
+    assert_eq!(j["fish"]["warn_below_cents"], 100);
+    assert_eq!(j["fish"]["error"], "voice credits are exhausted");
+    assert_eq!(j["fish"]["credit_usd"], Value::Null);
+}
+
+#[tokio::test]
+async fn credits_reject_bad_updates() {
+    let h = harness().await;
+    let cookie = unlock(&h).await;
+    for bad in [
+        json!({"anchor_cents": -1}),
+        json!({"anchor_cents": 1_000_001}),
+        json!({"anchor_cents": 9.5}),
+        json!({"anchor_cents": "900"}),
+        json!({"balance": 900}),
+    ] {
+        let r = send(
+            &h,
+            bff(
+                Method::POST,
+                "/web/credits",
+                Some(&cookie),
+                Some(bad.clone()),
+            ),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
+        assert_envelope(&r.json(), "invalid_request");
+    }
+    // Nothing was stored.
+    let j = send(&h, bff(Method::GET, "/web/credits", Some(&cookie), None))
+        .await
+        .json();
+    assert_eq!(j["anthropic"]["anchor_cents"], Value::Null);
 }

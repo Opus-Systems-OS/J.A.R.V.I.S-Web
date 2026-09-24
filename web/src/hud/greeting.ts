@@ -1,9 +1,11 @@
 // What Jarvis says the moment you unlock. A template over live data, not a
 // model call: instant, free (bar the voice's characters), and it never
 // invents a number. Stage 5 adds the briefing sources (weather, mail,
-// YouTube, calendar, Whoop); until then it reports on the systems.
+// YouTube, calendar, Whoop); until then it reports on the systems, and
+// warns when a balance is low (the credit ledger).
 
-import { get } from "../api";
+import { get, webGet } from "../api";
+import { creditLine, type Credits } from "./credits";
 import { compactOps } from "./tools";
 
 const TZ = "America/Los_Angeles";
@@ -35,12 +37,15 @@ export function systemsLine(rows: { service: string; state: string; headline: st
 }
 
 export async function greeting(): Promise<string> {
-  const [ops, rig] = await Promise.allSettled([
+  const [ops, rig, credits] = await Promise.allSettled([
     get<Record<string, unknown>>("ops"),
     get<{ online?: boolean }>("rig"),
+    webGet<Credits>("credits"),
   ]);
   const parts = [`${salutation()}.`];
   parts.push(ops.status === "fulfilled" ? systemsLine(compactOps(ops.value)) : "I can't reach the operations feed at the moment.");
   if (rig.status === "fulfilled" && rig.value.online) parts.push("The rig is up, if you need local models.");
+  const warning = credits.status === "fulfilled" ? creditLine(credits.value) : null;
+  if (warning) parts.push(warning);
   return parts.join(" ");
 }

@@ -12,6 +12,7 @@
 pub mod auth;
 pub mod bff;
 pub mod config;
+pub mod credits;
 pub mod db;
 pub mod error;
 pub mod mic;
@@ -101,6 +102,7 @@ pub fn app(state: AppState) -> Router {
         .route("/bff/v1/{*rest}", any(bff::proxy))
         .route("/auth/logout", post(auth::logout))
         .route("/web/mic", post(mic::mic))
+        .route("/web/credits", get(credits::get).post(credits::update))
         .route_layer(from_fn_with_state(state.clone(), auth::require_session));
 
     let api = Router::new()

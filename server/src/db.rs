@@ -1,6 +1,8 @@
-//! SQLite for what this site owns: unlocked browser sessions and failed
-//! unlock attempts. Fleet state, usage and everything Jarvis knows are read
-//! live through the API — never stored here. Times are unix seconds.
+//! SQLite for what this site owns: unlocked browser sessions, failed unlock
+//! attempts, and the credit ledger — the Anthropic balance you typed after a
+//! top-up and your warning thresholds. Fleet state, usage and everything
+//! Jarvis knows are read live through the API — never stored here. Times
+//! are unix seconds.
 
 use crate::error::Result;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -19,7 +21,32 @@ CREATE TABLE IF NOT EXISTS login_failures (
   at   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS login_failures_at ON login_failures (at);
+CREATE TABLE IF NOT EXISTS credit_settings (
+  id                    INTEGER PRIMARY KEY CHECK (id = 1),
+  anchor_cents          INTEGER,            -- the Console balance you typed
+  anchored_at           INTEGER,            -- when you typed it
+  anthropic_warn_cents  INTEGER NOT NULL DEFAULT 1000,
+  fish_warn_cents       INTEGER NOT NULL DEFAULT 200
+);
+INSERT OR IGNORE INTO credit_settings (id) VALUES (1);
 "#;
+
+/// The ledger's one row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreditSettings {
+    pub anchor_cents: Option<i64>,
+    pub anchored_at: Option<i64>,
+    pub anthropic_warn_cents: i64,
+    pub fish_warn_cents: i64,
+}
+
+/// A partial update; `None` leaves a field as it is.
+#[derive(Debug, Default)]
+pub struct CreditPatch {
+    pub anchor_cents: Option<i64>,
+    pub anthropic_warn_cents: Option<i64>,
+    pub fish_warn_cents: Option<i64>,
+}
 
 #[derive(Clone)]
 pub struct Db {
@@ -140,5 +167,83 @@ impl Db {
             c.execute("DELETE FROM login_failures WHERE ip = ?1", [ip])
                 .map(|_| ())
         })
+    }
+
+    // ---- credit ledger -------------------------------------------------------
+
+    pub fn credits(&self) -> Result<CreditSettings> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT anchor_cents, anchored_at, anthropic_warn_cents, fish_warn_cents
+                 FROM credit_settings WHERE id = 1",
+                [],
+                |r| {
+                    Ok(CreditSettings {
+                        anchor_cents: r.get(0)?,
+                        anchored_at: r.get(1)?,
+                        anthropic_warn_cents: r.get(2)?,
+                        fish_warn_cents: r.get(3)?,
+                    })
+                },
+            )
+        })
+    }
+
+    /// Apply `patch`. A new anchor is stamped with the current time.
+    pub fn set_credits(&self, patch: &CreditPatch) -> Result<()> {
+        let now = now();
+        self.with(|c| {
+            if let Some(cents) = patch.anchor_cents {
+                c.execute(
+                    "UPDATE credit_settings SET anchor_cents = ?1, anchored_at = ?2 WHERE id = 1",
+                    params![cents, now],
+                )?;
+            }
+            if let Some(cents) = patch.anthropic_warn_cents {
+                c.execute(
+                    "UPDATE credit_settings SET anthropic_warn_cents = ?1 WHERE id = 1",
+                    [cents],
+                )?;
+            }
+            if let Some(cents) = patch.fish_warn_cents {
+                c.execute(
+                    "UPDATE credit_settings SET fish_warn_cents = ?1 WHERE id = 1",
+                    [cents],
+                )?;
+            }
+            Ok(())
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credit_ledger_defaults_and_patches() {
+        let db = Db::in_memory().unwrap();
+        let c = db.credits().unwrap();
+        assert_eq!(c.anchor_cents, None);
+        assert_eq!(c.anchored_at, None);
+        assert_eq!((c.anthropic_warn_cents, c.fish_warn_cents), (1000, 200));
+
+        db.set_credits(&CreditPatch {
+            anchor_cents: Some(900),
+            ..Default::default()
+        })
+        .unwrap();
+        let c = db.credits().unwrap();
+        assert_eq!(c.anchor_cents, Some(900));
+        assert!(c.anchored_at.is_some_and(|t| (now() - t).abs() < 5));
+        assert_eq!(c.anthropic_warn_cents, 1000, "untouched");
+
+        db.set_credits(&CreditPatch {
+            fish_warn_cents: Some(50),
+            ..Default::default()
+        })
+        .unwrap();
+        let c = db.credits().unwrap();
+        assert_eq!((c.anchor_cents, c.fish_warn_cents), (Some(900), 50));
     }
 }
