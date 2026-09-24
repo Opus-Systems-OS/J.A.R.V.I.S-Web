@@ -7,7 +7,7 @@
 import { get, lock, type Me } from "../api";
 import { greeting } from "./greeting";
 import { Jarvis, MODELS, type Phase } from "./jarvis";
-import { Listener, type ListenerState } from "./listener";
+import { Listener, type Engine, type ListenerState } from "./listener";
 import { Speaker } from "./speaker";
 import { compactOps } from "./tools";
 import { Transcript } from "./transcript";
@@ -173,6 +173,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   let phase: Phase = "idle";
   let lastReplyAsked = false; // did Jarvis's last spoken reply end in a question?
   let micState: ListenerState = "off";
+  let engine: Engine = "browser";
   const renderOrb = () => {
     const state = speaker.speaking ? "speaking" : phase === "thinking" ? "thinking" : phase === "error" ? "error" : micState === "awake" ? "listening" : "idle";
     orb.dataset.state = state;
@@ -203,8 +204,15 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     onState: (s) => {
       micState = s;
       mic.dataset.state = s;
-      mic.textContent = MIC_LABEL[s];
+      mic.textContent = MIC_LABEL[s] + (engine === "cloud" && (s === "passive" || s === "awake") ? " · cloud" : "");
       renderOrb();
+    },
+    onEngine: (e) => {
+      engine = e;
+      mic.title =
+        e === "cloud"
+          ? "This browser has no speech service of its own: speech is detected here and transcribed by Fish (≈ $0.36 per hour of speech; silence is never sent)."
+          : "The browser's own speech recognition.";
     },
   });
   const jarvis = new Jarvis(transcript, {
