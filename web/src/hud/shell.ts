@@ -5,10 +5,14 @@
 // the session bookmark Jarvis keeps.
 
 import { get, lock, type Me } from "../api";
+import { ago, FleetView } from "./fleet";
 import { greeting } from "./greeting";
 import { Jarvis, MODELS, type Phase } from "./jarvis";
 import { Listener, type Engine, type ListenerState } from "./listener";
+import { MicLease } from "./micLease";
 import { Speaker } from "./speaker";
+import { SystemsView } from "./systems";
+import { TerminalView, terminalTask } from "./terminal";
 import { compactOps } from "./tools";
 import { Transcript } from "./transcript";
 
@@ -45,9 +49,10 @@ const TEMPLATE = `
       <button class="btn-ghost" id="hud-lock" title="Lock">Lock</button>
     </div>
   </header>
-  <div class="stage" data-tab="HUD">
+  <div class="views">
+  <div class="stage" data-view="HUD">
     <aside class="column column-left">
-      ${PANEL("panel-fleet", "Fleet", `<p class="panel-empty">Agents and sessions come online in the next module.</p>`)}
+      ${PANEL("panel-fleet", "Fleet", `<ul class="rows recent" id="recent-rows"><li class="panel-empty">Reading the fleet…</li></ul>`)}
     </aside>
     <div class="center">
       <button class="orb" id="orb" data-state="idle" aria-label="Talk to Jarvis">${ORB_SVG}</button>
@@ -58,6 +63,11 @@ const TEMPLATE = `
       ${PANEL("panel-systems", "Systems", `<ul class="rows" id="systems-rows"><li class="panel-empty">Reading the tower…</li></ul>`)}
       ${PANEL("panel-usage", "Usage", `<p class="panel-empty">Spend and credits come online in a later module.</p>`)}
     </aside>
+  </div>
+  <div class="view" data-view="Fleet" id="view-fleet" hidden></div>
+  <div class="view" data-view="Systems" id="view-systems" hidden></div>
+  <div class="view view-soon" data-view="Usage" hidden><p class="panel-empty">Spend, credits and warnings arrive in the next module.</p></div>
+  <div class="view" data-view="Terminal" id="view-terminal" hidden></div>
   </div>
   <div class="dock">
     <section class="drawer" id="drawer" data-open="true">
@@ -122,6 +132,7 @@ export interface Hud {
 /** `speaker` was primed inside the unlock click, so it may play audio. */
 export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => void): Hud {
   root.innerHTML = TEMPLATE;
+  root.dataset.tab = "HUD";
   root.hidden = false;
   root.classList.remove("entering");
   void root.offsetWidth;
@@ -138,13 +149,22 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   const meta = $<HTMLSpanElement>("#drawer-meta");
   const input = $<HTMLInputElement>("#ask-input");
   const modelSelect = $<HTMLSelectElement>("#hud-model");
-  const stage = $<HTMLDivElement>(".stage");
   const timers: number[] = [];
 
-  // ---- tabs ----------------------------------------------------------------
+  // ---- views ---------------------------------------------------------------
+  const fleetView = new FleetView($("#view-fleet"));
+  const systemsView = new SystemsView($("#view-systems"));
+  let current = "HUD";
   const openPanel = (tab: string) => {
     root.querySelectorAll<HTMLButtonElement>(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.tab === tab)));
-    stage.dataset.tab = tab;
+    root.querySelectorAll<HTMLElement>("[data-view]").forEach((v) => (v.hidden = v.dataset.view !== tab));
+    root.dataset.tab = tab;
+    if (current === "Fleet") fleetView.hide();
+    if (current === "Systems") systemsView.hide();
+    current = tab;
+    if (tab === "Fleet") fleetView.show();
+    if (tab === "Systems") systemsView.show();
+    if (tab === "Terminal") terminal.focus();
   };
   root.querySelectorAll<HTMLButtonElement>(".tab").forEach((b) => (b.onclick = () => openPanel(b.dataset.tab ?? "HUD")));
 
@@ -174,6 +194,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   let lastReplyAsked = false; // did Jarvis's last spoken reply end in a question?
   let micState: ListenerState = "off";
   let engine: Engine = "browser";
+  const lease = new MicLease();
   const renderOrb = () => {
     const state = speaker.speaking ? "speaking" : phase === "thinking" ? "thinking" : phase === "error" ? "error" : micState === "awake" ? "listening" : "idle";
     orb.dataset.state = state;
@@ -203,8 +224,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     },
     onState: (s) => {
       micState = s;
-      mic.dataset.state = s;
-      mic.textContent = MIC_LABEL[s] + (engine === "cloud" && (s === "passive" || s === "awake") ? " · cloud" : "");
+      renderMic();
       renderOrb();
     },
     onEngine: (e) => {
@@ -215,6 +235,31 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
           : "The browser's own speech recognition.";
     },
   });
+  const renderMic = () => {
+    if (!lease.held && (micState === "off" || micState === "paused")) {
+      mic.dataset.state = "elsewhere";
+      mic.textContent = "Mic in another window";
+      mic.title = "Another open HUD is listening. Click the orb to listen here instead.";
+      return;
+    }
+    mic.dataset.state = micState;
+    mic.textContent = MIC_LABEL[micState] + (engine === "cloud" && (micState === "passive" || micState === "awake") ? " · cloud" : "");
+  };
+  // Only the HUD holding the lease listens; the rest wait (orb click = take it).
+  lease.onChange((held) => {
+    if (held) listener.start();
+    else listener.stop();
+    renderMic();
+  });
+
+  const terminal = new TerminalView($("#view-terminal"), {
+    run: (cmd) => {
+      speaker.stop();
+      void jarvis.ask(terminalTask(cmd), { silent: true });
+    },
+    sessionId: () => jarvis.session,
+  });
+
   const jarvis = new Jarvis(transcript, {
     onPhase: (p, detail) => {
       phase = p;
@@ -232,6 +277,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       meta.textContent = `$${(cost / 100).toFixed(2)}${cap ? ` of $${(cap / 100).toFixed(2)}` : ""}`;
     },
     openPanel,
+    onEvent: (e) => terminal.feed(e),
   });
   speaker.onChange((s) => {
     if (s === "speaking") listener.pause();
@@ -240,10 +286,14 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   });
 
   modelSelect.value = jarvis.model;
-  modelSelect.onchange = () => jarvis.setModel(modelSelect.value);
+  modelSelect.onchange = () => {
+    jarvis.setModel(modelSelect.value);
+    terminal.clear();
+  };
   $<HTMLButtonElement>("#drawer-new").onclick = () => {
     speaker.stop();
     jarvis.newConversation();
+    terminal.clear();
     meta.textContent = "";
   };
 
@@ -256,12 +306,14 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     void jarvis.ask(text);
   };
 
-  // Click the orb: stop talking if he is, otherwise listen without the wake word.
-  orb.onclick = () => {
+  // Click the orb: stop talking if he is; take the mic if another HUD has
+  // it; otherwise listen without the wake word.
+  orb.onclick = async () => {
     if (speaker.speaking) {
       speaker.stop();
       return;
     }
+    if (!lease.held) await lease.claim(true);
     listener.arm();
   };
   const onKey = (e: KeyboardEvent) => {
@@ -305,6 +357,40 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   void renderSystems();
   timers.push(window.setInterval(() => void renderSystems(), 60_000));
 
+  // ---- recent sessions (HUD's Fleet panel) ----------------------------------
+  const recent = $<HTMLUListElement>("#recent-rows");
+  const renderRecent = async () => {
+    try {
+      const list = (
+        await get<{ data: { id: string; status: string; title?: string; updated_at?: string; created_at: string; metadata?: Record<string, string> }[] }>(
+          "sessions?limit=6&order=desc",
+        )
+      ).data;
+      recent.replaceChildren(
+        ...list.map((s) => {
+          const li = document.createElement("li");
+          li.className = "row";
+          li.dataset.state = s.status === "running" ? "ok" : s.status === "terminated" ? "down" : "idle";
+          const name = document.createElement("span");
+          name.className = "row-name";
+          name.textContent = s.metadata?.iron_fleet_agent ?? "?";
+          const detail = document.createElement("span");
+          detail.className = "row-detail";
+          detail.textContent = `${s.title ?? s.id} · ${ago(s.updated_at ?? s.created_at)}`;
+          li.append(name, detail);
+          li.onclick = () => openPanel("Fleet");
+          return li;
+        }),
+      );
+      const tag = root.querySelector<HTMLElement>("#panel-fleet [data-tag]");
+      if (tag) tag.textContent = `${list.filter((s) => s.status === "running").length} running`;
+    } catch {
+      recent.innerHTML = `<li class="panel-empty">Fleet unavailable</li>`;
+    }
+  };
+  void renderRecent();
+  timers.push(window.setInterval(() => void renderRecent(), 30_000));
+
   // ---- start ---------------------------------------------------------------
   get<Me>("me")
     .then((me) => {
@@ -317,12 +403,13 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       link.textContent = "Link down";
     });
 
-  listener.start();
+  lease.start();
   void jarvis.resume();
-  void greeting().then((line) => {
+  void Promise.all([greeting(), lease.claim(false)]).then(([line, held]) => {
     transcript.note(line);
     lastReplyAsked = false; // the greeting never opens a follow-up
-    speaker.say(line);
+    // Only the HUD with the mic speaks it; another open window just shows it.
+    if (held) speaker.say(line);
   });
 
   return {
@@ -330,10 +417,14 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       timers.forEach((t) => window.clearInterval(t));
       cancelAnimationFrame(raf);
       window.removeEventListener("keydown", onKey);
+      lease.onChange(null);
+      lease.stop();
       listener.stop();
       speaker.stop();
       speaker.onChange(null);
       jarvis.detach();
+      fleetView.dispose();
+      systemsView.dispose();
     },
   };
 }

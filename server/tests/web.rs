@@ -465,3 +465,57 @@ async fn shell_and_assets_carry_the_right_headers() {
     let r = send(&h, get("/healthz")).await;
     assert_eq!(r.status, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn one_hud_holds_the_mic() {
+    let h = harness().await;
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/mic",
+            None,
+            Some(json!({"client": "tab-aaaa1111"})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        r.status,
+        StatusCode::UNAUTHORIZED,
+        "needs an unlocked session"
+    );
+
+    let cookie = unlock(&h).await;
+    let claim = |client: &'static str, take: bool| {
+        bff(
+            Method::POST,
+            "/web/mic",
+            Some(&cookie),
+            Some(json!({"client": client, "take": take})),
+        )
+    };
+    assert_eq!(
+        send(&h, claim("tab-aaaa1111", false)).await.json()["held"],
+        true
+    );
+    assert_eq!(
+        send(&h, claim("tab-bbbb2222", false)).await.json()["held"],
+        false
+    );
+    assert_eq!(
+        send(&h, claim("tab-bbbb2222", true)).await.json()["held"],
+        true,
+        "orb click takes over"
+    );
+    assert_eq!(
+        send(&h, claim("tab-aaaa1111", false)).await.json()["held"],
+        false
+    );
+
+    let r = send(&h, claim("bad client!", false)).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(
+        h.seen.lock().unwrap().is_empty(),
+        "the lease never touches the API"
+    );
+}

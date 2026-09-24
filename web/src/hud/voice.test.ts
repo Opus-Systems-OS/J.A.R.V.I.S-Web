@@ -154,3 +154,15 @@ describe("listener on a browser without the speech service (Arc)", () => {
     vi.useRealTimers();
   });
 });
+
+describe("ago", () => {
+  it("rounds to the largest sensible unit", async () => {
+    const { ago } = await import("./fleet");
+    const now = Date.parse("2026-09-24T03:00:00Z");
+    expect(ago("2026-09-24T02:59:30Z", now)).toBe("30s ago");
+    expect(ago("2026-09-24T02:45:00Z", now)).toBe("15m ago");
+    expect(ago("2026-09-23T22:00:00Z", now)).toBe("5h ago");
+    expect(ago("2026-09-21T03:00:00Z", now)).toBe("3d ago");
+    expect(ago(undefined, now)).toBe("");
+  });
+});

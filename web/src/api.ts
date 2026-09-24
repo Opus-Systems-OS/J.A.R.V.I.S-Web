@@ -61,6 +61,23 @@ export async function lock(): Promise<void> {
   await request("POST", "/auth/logout").catch(() => undefined);
 }
 
+/** `/web/*`: this site's own small routes (the mic lease). */
+export async function web<T>(path: string, body: unknown, keepalive = false): Promise<T> {
+  if (keepalive) {
+    // Unload-safe: fire and forget.
+    void fetch(`/web/${path}`, {
+      method: "POST",
+      headers: { "x-jarvis": "1", "content-type": "application/json" },
+      body: JSON.stringify(body),
+      credentials: "same-origin",
+      keepalive: true,
+    }).catch(() => undefined);
+    return undefined as T;
+  }
+  const res = await request("POST", `/web/${path}`, body);
+  return (await res.json()) as T;
+}
+
 export async function get<T>(apiPath: string): Promise<T> {
   const res = await request("GET", `/bff/v1/${apiPath}`);
   return (await res.json()) as T;

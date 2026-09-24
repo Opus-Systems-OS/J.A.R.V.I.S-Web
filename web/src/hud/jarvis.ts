@@ -41,6 +41,8 @@ export interface JarvisEvents {
   onReply(text: string): void;
   onUsage(costCents: number | null, capCents: number | null): void;
   openPanel(tab: string): void;
+  /** Every event of the conversation, for other views (the terminal). */
+  onEvent?(e: SessionEvent, live: boolean): void;
 }
 
 function load(key: string): string | null {
@@ -67,6 +69,8 @@ export class Jarvis {
   private readonly silent = new Set<string>();
   private readonly answered = new Set<string>();
   private busy = false;
+  /** A terminal command is running: its reply is shown, never spoken. */
+  private silentTurn = false;
 
   constructor(
     private readonly transcript: Transcript,
@@ -108,10 +112,11 @@ export class Jarvis {
     this.transcript.divider("new conversation");
   }
 
-  async ask(text: string) {
+  async ask(text: string, opts: { silent?: boolean } = {}) {
     const task = text.trim();
     if (!task) return;
     this.busy = true;
+    this.silentTurn = !!opts.silent;
     this.ev.onPhase("thinking", task);
     try {
       if (this.sessionId) {
@@ -206,7 +211,9 @@ export class Jarvis {
    * except a tool call nobody answered, which is answered now.
    */
   private handle(e: SessionEvent, live = true) {
+    const fresh = !this.transcript.has(e.id);
     const r: Rendered = this.transcript.render(e);
+    if (fresh) this.ev.onEvent?.(e, live);
     if (!live) {
       if (r.kind === "custom_tool") void this.answer(r.id, r.name, r.input);
       return;
@@ -214,6 +221,7 @@ export class Jarvis {
     switch (r.kind) {
       case "agent_message":
         if (r.id && this.silent.has(r.id)) break;
+        if (this.silentTurn) break;
         if (r.text.trim()) this.ev.onReply(r.text);
         break;
       case "custom_tool":
@@ -226,6 +234,7 @@ export class Jarvis {
       case "idle":
         if (r.stop_reason === "requires_action") break; // our tool answer is on its way
         this.busy = false;
+        this.silentTurn = false;
         if (r.stop_reason === "budget_reached") {
           this.ev.onReply("This conversation has reached its budget, sir. I'll start a fresh one next time you ask.");
           this.forget();
