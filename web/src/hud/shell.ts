@@ -16,6 +16,7 @@ import { SystemsView } from "./systems";
 import { TerminalView, terminalTask } from "./terminal";
 import { compactOps } from "./tools";
 import { Attachments } from "./attach";
+import { agentName, JobWatch, type Job } from "./jobs";
 import { Transcript } from "./transcript";
 import { isoSeconds, UsageView } from "./usage";
 
@@ -61,6 +62,7 @@ const TEMPLATE = `
   <div class="stage" data-view="HUD">
     <aside class="column column-left">
       ${PANEL("panel-fleet", "Fleet", `<ul class="rows recent" id="recent-rows"><li class="panel-empty">Reading the fleet…</li></ul>`)}
+      ${PANEL("panel-jobs", "Jobs", `<ul class="rows" id="job-rows"><li class="panel-empty">No jobs dispatched</li></ul>`)}
     </aside>
     <div class="center">
       <button class="orb" id="orb" data-state="idle" aria-label="Talk to Jarvis">${ORB_SVG}</button>
@@ -281,6 +283,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   });
 
   const jarvis = new Jarvis(transcript, {
+    jobs: () => jobWatch.current,
     onPhase: (p, detail) => {
       phase = p;
       if (p === "thinking" && detail) sub.textContent = `“${detail}”`;
@@ -534,6 +537,53 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   void renderRecent();
   timers.push(window.setInterval(() => void renderRecent(), 30_000));
 
+  // ---- jobs Jarvis dispatched (BlueWeb, the rig) -----------------------------
+  const jobRows = $<HTMLUListElement>("#job-rows");
+  const DAY = 86_400_000;
+  const renderJobs = (all: Job[]) => {
+    // Working ones, and anything that stopped in the last day.
+    const jobs = all
+      .filter((j) => j.status === "running" || j.status === "rescheduling" || (j.updatedAt && Date.now() - Date.parse(j.updatedAt) < DAY))
+      .slice(0, 6);
+    const tag = root.querySelector<HTMLElement>("#panel-jobs [data-tag]");
+    const working = jobs.filter((j) => j.status === "running" || j.status === "rescheduling").length;
+    if (tag) tag.textContent = working ? `${working} working` : "standby";
+    if (!jobs.length) {
+      jobRows.innerHTML = `<li class="panel-empty">No jobs dispatched</li>`;
+      return;
+    }
+    jobRows.replaceChildren(
+      ...jobs.map((j) => {
+        const li = document.createElement("li");
+        li.className = "row";
+        li.dataset.state = j.status === "running" || j.status === "rescheduling" ? "ok" : j.status === "terminated" ? "down" : "idle";
+        const name = document.createElement("span");
+        name.className = "row-name";
+        name.textContent = agentName(j.agent);
+        const detail = document.createElement("span");
+        detail.className = "row-detail";
+        detail.textContent = `${j.title} · ${j.status} · ${ago(j.updatedAt)}`;
+        li.append(name, detail);
+        li.title = "Open in Fleet";
+        li.onclick = () => {
+          openPanel("Fleet");
+          fleetView.open(j.id);
+        };
+        return li;
+      }),
+    );
+  };
+  const jobWatch = new JobWatch({
+    onJobs: renderJobs,
+    onAnnounce: (line) => {
+      transcript.note(line);
+      if (lease.held) {
+        lastReplyAsked = false;
+        speaker.say(line);
+      }
+    },
+  });
+
   // ---- start ---------------------------------------------------------------
   get<Me>("me")
     .then((me) => {
@@ -560,6 +610,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   lease.start();
   watch.start();
   void jarvis.resume();
+  jobWatch.start();
   void Promise.all([greeting(), firstClaim]).then(([line, held]) => {
     transcript.note(line);
     lastReplyAsked = false; // the greeting never opens a follow-up
@@ -570,6 +621,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   return {
     unmount() {
       timers.forEach((t) => window.clearInterval(t));
+      jobWatch.stop();
       cancelAnimationFrame(raf);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("dragover", onDragOver);

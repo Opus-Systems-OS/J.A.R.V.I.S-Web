@@ -5,6 +5,7 @@
 // except `open_panel`, which only moves the HUD.
 
 import { get } from "../api";
+import { compactJobs, type Job } from "./jobs";
 
 export interface ToolDef {
   type: "custom";
@@ -38,6 +39,15 @@ export const TOOLS: ToolDef[] = [
       properties: { since: { type: "string", description: "Start of the window, e.g. 2026-09-01" } },
       additionalProperties: false,
     },
+  },
+  {
+    type: "custom",
+    name: "fleet_jobs",
+    description:
+      "The jobs you dispatched to other fleet agents with start_session (BlueWeb, the rig), newest first: session_id, " +
+      "agent, title, status (running, idle, terminated) and when it last changed. Use it to find a job's session_id " +
+      "when he asks how a job is going, then get_session_status for what it said. Works across conversations.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     type: "custom",
@@ -91,7 +101,7 @@ function compactUsage(u: Json): unknown {
 export async function runTool(
   name: string,
   input: unknown,
-  ui: { openPanel(tab: string): void },
+  ui: { openPanel(tab: string): void; jobs(): Job[] },
 ): Promise<{ content: string; is_error?: boolean }> {
   const args = (input ?? {}) as Record<string, unknown>;
   try {
@@ -110,6 +120,8 @@ export async function runTool(
         const usage = await get<Json>(`usage${since}`);
         return { content: JSON.stringify(compactUsage(usage)) };
       }
+      case "fleet_jobs":
+        return { content: JSON.stringify(compactJobs(ui.jobs())) };
       case "open_panel": {
         const tab = String(args.name ?? "");
         if (!TABS.includes(tab)) return { content: `unknown panel ${tab}`, is_error: true };

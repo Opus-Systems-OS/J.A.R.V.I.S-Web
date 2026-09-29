@@ -236,6 +236,11 @@ export class FleetView {
     );
   }
 
+  /** Show this session in the inspector (a job clicked on the HUD). */
+  open(id: string) {
+    this.select(id);
+  }
+
   private select(id: string) {
     if (this.selected === id) return;
     this.selected = id;

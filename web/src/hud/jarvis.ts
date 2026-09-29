@@ -8,6 +8,7 @@
 // the Tauri app keeps one. The conversation itself is Anthropic's.
 
 import { ApiError, get, post } from "../api";
+import type { Job } from "./jobs";
 import { TOOLS, runTool } from "./tools";
 import type { OutputFile, Rendered, SessionEvent, Transcript } from "./transcript";
 
@@ -23,6 +24,7 @@ const SYSTEM_SUFFIX = [
   "no markdown, no bullet points, no code unless he asks to see it, spell out symbols, and round numbers.",
   "Send one message per turn: say briefly what you are about to do only if it will take more than a few seconds.",
   "Use opus_status for anything about the state of his systems and fleet_usage for spend, rather than guessing.",
+  "Use fleet_jobs to find the jobs you dispatched; the HUD announces when one finishes or has a question.",
 ].join(" ");
 
 export const MODELS: { id: string; label: string }[] = [
@@ -43,6 +45,8 @@ export interface JarvisEvents {
   /** This session hit Anthropic's billing error (credit exhausted). */
   onBillingError?(): void;
   openPanel(tab: string): void;
+  /** The jobs this HUD is watching (for the `fleet_jobs` tool). */
+  jobs(): Job[];
   /** Every event of the conversation, for other views (the terminal). */
   onEvent?(e: SessionEvent, live: boolean): void;
 }
@@ -281,7 +285,7 @@ export class Jarvis {
   private async answer(toolUseId: string, name: string, input: unknown) {
     if (!toolUseId || this.answered.has(toolUseId) || !this.sessionId) return;
     this.answered.add(toolUseId);
-    const result = await runTool(name, input, { openPanel: (t) => this.ev.openPanel(t) });
+    const result = await runTool(name, input, { openPanel: (t) => this.ev.openPanel(t), jobs: () => this.ev.jobs() });
     await post(`sessions/${this.sessionId}/tool-results`, {
       results: [{ custom_tool_use_id: toolUseId, content: result.content, ...(result.is_error ? { is_error: true } : {}) }],
     }).catch((e) => this.transcript.note(`tool result not delivered: ${String(e)}`, true));
