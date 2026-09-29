@@ -19,15 +19,29 @@ use futures_util::TryStreamExt;
 /// First path segment → reachable. Everything else is a 404 here.
 const ALLOWED_AREAS: &[&str] = &[
     "me", "fleet", "rig", "sessions", "usage", "voice", "ops", "sources", "briefing", "clients",
+    "files",
 ];
 /// Never reachable, at any depth.
 const FORBIDDEN_SEGMENTS: &[&str] = &["keys", "pair"];
-/// Request bodies are small JSON (events, tool results, text to speak).
+/// Request bodies are small JSON (events, tool results, text to speak)…
 const MAX_REQUEST_BYTES: usize = 1 << 20;
+/// …except a file attached in the chat (`POST files`): the API's 32 MB per
+/// file plus multipart framing.
+const MAX_UPLOAD_BYTES: usize = 32 * 1024 * 1024 + 64 * 1024;
+
+fn body_limit(api_path: &str) -> usize {
+    if api_path == "/v1/files" {
+        MAX_UPLOAD_BYTES
+    } else {
+        MAX_REQUEST_BYTES
+    }
+}
 
 const FORWARD_REQUEST: &[HeaderName] = &[header::CONTENT_TYPE, header::ACCEPT];
 const FORWARD_RESPONSE: &[HeaderName] = &[
     header::CONTENT_TYPE,
+    // An agent's output file downloads under its own name.
+    header::CONTENT_DISPOSITION,
     header::CACHE_CONTROL,
     header::RETRY_AFTER,
 ];
@@ -72,7 +86,7 @@ pub async fn proxy(
         url.push_str(q);
     }
 
-    let body = axum::body::to_bytes(body, MAX_REQUEST_BYTES)
+    let body = axum::body::to_bytes(body, body_limit(&path))
         .await
         .map_err(|_| Error::InvalidRequest("request body too large".to_owned()))?;
 
@@ -128,6 +142,16 @@ mod tests {
         assert_eq!(
             allowed_path("voice/speak").as_deref(),
             Some("/v1/voice/speak")
+        );
+        assert_eq!(allowed_path("files").as_deref(), Some("/v1/files"));
+        assert_eq!(
+            allowed_path("files/file_011CN/content").as_deref(),
+            Some("/v1/files/file_011CN/content")
+        );
+        assert_eq!(super::body_limit("/v1/files"), super::MAX_UPLOAD_BYTES);
+        assert_eq!(
+            super::body_limit("/v1/sessions/sesn_1/events"),
+            super::MAX_REQUEST_BYTES
         );
         for denied in [
             "keys",

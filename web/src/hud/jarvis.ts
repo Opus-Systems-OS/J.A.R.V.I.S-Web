@@ -9,7 +9,7 @@
 
 import { ApiError, get, post } from "../api";
 import { TOOLS, runTool } from "./tools";
-import type { Rendered, SessionEvent, Transcript } from "./transcript";
+import type { OutputFile, Rendered, SessionEvent, Transcript } from "./transcript";
 
 const SESSION_KEY = "jarvis.session";
 const MODEL_KEY = "jarvis.model";
@@ -114,16 +114,22 @@ export class Jarvis {
     this.transcript.divider("new conversation");
   }
 
-  async ask(text: string, opts: { silent?: boolean } = {}) {
+  /**
+   * `attachments`: ids from `/files` (the chat's tray). A message may be
+   * files alone; the control plane then supplies the words.
+   */
+  async ask(text: string, opts: { silent?: boolean; attachments?: string[] } = {}) {
     const task = text.trim();
-    if (!task) return;
+    const attachments = opts.attachments ?? [];
+    if (!task && !attachments.length) return;
+    const files = attachments.length ? { attachments } : {};
     this.busy = true;
     this.silentTurn = !!opts.silent;
-    this.ev.onPhase("thinking", task);
+    this.ev.onPhase("thinking", task || "looking at the attached files");
     try {
       if (this.sessionId) {
         try {
-          await post(`sessions/${this.sessionId}/events`, { task });
+          await post(`sessions/${this.sessionId}/events`, { task, ...files });
           return;
         } catch (e) {
           // A session that can no longer take messages: start afresh below.
@@ -138,6 +144,7 @@ export class Jarvis {
         client: "web",
         system_suffix: SYSTEM_SUFFIX,
         tools: TOOLS,
+        ...files,
         ...(this.modelId ? { model: this.modelId } : {}),
       });
       this.sessionId = created.session_id;
@@ -205,6 +212,19 @@ export class Jarvis {
       if (e.type === "user.custom_tool_result" && e.custom_tool_use_id) this.answered.add(e.custom_tool_use_id);
     }
     for (const e of history) this.handle(e, !quiet);
+    void this.outputs(id);
+  }
+
+  /**
+   * Files the agent wrote to /mnt/session/outputs/ appear in the Files API
+   * shortly after it writes them — sometimes a few seconds after the turn
+   * ends — so look at the end of a turn and once more a little later.
+   */
+  private async outputs(id: string, again = false) {
+    const page = await get<{ data?: OutputFile[] }>(`sessions/${id}/files`).catch(() => null);
+    if (this.sessionId !== id) return;
+    if (page?.data) this.transcript.outputs(page.data);
+    if (again) window.setTimeout(() => void this.outputs(id), 4000);
   }
 
   /**
@@ -237,6 +257,7 @@ export class Jarvis {
         if (r.stop_reason === "requires_action") break; // our tool answer is on its way
         this.busy = false;
         this.silentTurn = false;
+        if (this.sessionId) void this.outputs(this.sessionId, true);
         if (r.stop_reason === "budget_reached") {
           this.ev.onReply("This conversation has reached its budget, sir. I'll start a fresh one next time you ask.");
           this.forget();
