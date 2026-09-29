@@ -4,6 +4,8 @@
 // re-parsing it. Token previews (`event_start`/`event_delta`) stream into a
 // placeholder that the persisted `agent.message` replaces.
 
+import { splitAttached } from "./attach";
+
 export interface MoneyAmount {
   amount: string;
   currency: string;
@@ -31,6 +33,15 @@ export interface SessionEvent {
 export interface ContentBlock {
   type: string;
   text?: string;
+}
+
+/** An entry of `GET /v1/sessions/{id}/files`. */
+export interface OutputFile {
+  id: string;
+  filename: string;
+  mime_type?: string;
+  size_bytes?: number;
+  downloadable?: boolean;
 }
 
 export type Rendered =
@@ -92,7 +103,22 @@ export class Transcript {
         // Terminal commands carry an instruction; show just the command.
         const term = text.startsWith("[terminal]") ? text.split("\n").slice(1).join("\n").trim() : null;
         if (term !== null) this.append("entry-system entry-term", `$ ${term}`, ev.id);
-        else this.append("entry-user", text, ev.id);
+        else {
+          const { said, files } = splitAttached(text);
+          const div = this.append("entry-user", said, ev.id);
+          if (files.length) {
+            const row = document.createElement("div");
+            row.className = "entry-files";
+            for (const f of files) {
+              const chip = document.createElement("span");
+              chip.className = "file-chip";
+              chip.title = `${f.path} · ${f.mime}, ${f.size}`;
+              chip.textContent = f.name;
+              row.appendChild(chip);
+            }
+            div.appendChild(row);
+          }
+        }
         out = { kind: "user_message", text };
         break;
       }
@@ -156,6 +182,30 @@ export class Transcript {
     }
     this.scroll(atBottom);
     return out;
+  }
+
+  /**
+   * Files the agent wrote to /mnt/session/outputs/, each a download link
+   * (the BFF streams it with its name). Each file is shown once.
+   */
+  outputs(files: OutputFile[]) {
+    const fresh = files.filter((f) => f.downloadable && !this.seen.has(f.id));
+    if (!fresh.length) return;
+    const atBottom = this.list.scrollHeight - this.list.scrollTop - this.list.clientHeight < 60;
+    const row = document.createElement("div");
+    row.className = "entry entry-outputs";
+    for (const f of fresh) {
+      this.seen.add(f.id);
+      const a = document.createElement("a");
+      a.className = "file-chip file-chip-out";
+      a.href = `/bff/v1/files/${encodeURIComponent(f.id)}/content`;
+      a.download = f.filename;
+      a.textContent = f.filename;
+      a.title = `Download ${f.filename}`;
+      row.appendChild(a);
+    }
+    this.list.appendChild(row);
+    this.scroll(atBottom);
   }
 
   private scroll(force: boolean) {

@@ -360,6 +360,136 @@ button.orb:focus-visible {
   border-top: 1px solid var(--line);
 }
 
+.ask {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.ask-tray {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.ask-tray[hidden] {
+  display: none;
+}
+
+.ask-attach {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.ask-attach:hover,
+.ask-attach:focus-visible {
+  color: var(--accent);
+  border-color: var(--line-strong);
+}
+
+/* A file: its name, an upload bar while it goes up, a remove button. */
+.file-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  padding: 0.2rem 0.3rem 0.2rem 0.55rem;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text);
+  overflow: hidden;
+}
+
+.file-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 24ch;
+}
+
+.file-chip-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+
+.file-chip:not(.uploading) .file-chip-bar {
+  display: none;
+}
+
+.file-chip.failed {
+  border-color: var(--alert);
+  color: var(--alert);
+}
+
+.file-chip-x {
+  background: none;
+  border: 0;
+  padding: 0 0.2rem;
+  color: var(--text-faint);
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.file-chip-x:hover {
+  color: var(--accent);
+}
+
+.entry-files {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  margin-top: 0.3rem;
+}
+
+.entry-files .file-chip {
+  padding-right: 0.55rem;
+  color: var(--text-dim);
+}
+
+.entry-outputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.file-chip-out {
+  padding-right: 0.55rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.file-chip-out::before {
+  content: "↓";
+}
+
+.file-chip-out:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--glow-soft);
+}
+
+[data-dropping="true"] .drawer {
+  outline: 1px dashed var(--line-strong);
+  outline-offset: -4px;
+  box-shadow: var(--glow);
+}
+
 .ask input {
   flex: 1;
   min-width: 0;

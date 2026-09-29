@@ -15,6 +15,7 @@ import { Speaker } from "./speaker";
 import { SystemsView } from "./systems";
 import { TerminalView, terminalTask } from "./terminal";
 import { compactOps } from "./tools";
+import { Attachments } from "./attach";
 import { Transcript } from "./transcript";
 import { isoSeconds, UsageView } from "./usage";
 
@@ -93,6 +94,11 @@ const TEMPLATE = `
         <div class="transcript" id="transcript" aria-live="polite"></div>
       </div>
       <form class="ask" id="ask">
+        <div class="ask-tray" id="ask-tray" aria-label="Attached files" hidden></div>
+        <button class="ask-attach" id="ask-attach" type="button" title="Attach files (or drop or paste them)" aria-label="Attach files">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l8-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <input id="ask-files" type="file" multiple hidden />
         <input id="ask-input" autocomplete="off" spellcheck="true" placeholder="Say “Jarvis, …” or type here" aria-label="Message Jarvis" />
         <button class="btn-primary btn-small" type="submit">Send</button>
       </form>
@@ -223,11 +229,15 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
 
   // ---- the conversation ----------------------------------------------------
   const transcript = new Transcript($("#transcript"));
+  const attachments = new Attachments($("#ask-tray"), (t) => transcript.note(t, true));
+  /** A request, typed or spoken, with whatever is in the tray. */
+  const send = async (text: string) => {
+    speaker.stop();
+    const files = attachments.count ? await attachments.take() : [];
+    void jarvis.ask(text, { attachments: files });
+  };
   const listener = new Listener({
-    onCommand: (text) => {
-      speaker.stop();
-      void jarvis.ask(text);
-    },
+    onCommand: (text) => void send(text),
     onHearing: (text) => {
       if (text) sub.textContent = `“${text}”`;
       else if (phase !== "thinking") sub.textContent = "";
@@ -315,11 +325,45 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   $<HTMLFormElement>("#ask").onsubmit = (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (!text) return;
+    if (!text && !attachments.count) return;
     input.value = "";
-    speaker.stop();
-    void jarvis.ask(text);
+    void send(text);
   };
+
+  // ---- attachments: paperclip, drop anywhere on the HUD, paste -------------
+  const picker = $<HTMLInputElement>("#ask-files");
+  $<HTMLButtonElement>("#ask-attach").onclick = () => picker.click();
+  picker.onchange = () => {
+    if (picker.files) attachments.add(Array.from(picker.files));
+    picker.value = "";
+    input.focus();
+  };
+  const hasFiles = (e: DragEvent) => !!e.dataTransfer && Array.from(e.dataTransfer.types).includes("Files");
+  const onDragOver = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    root.dataset.dropping = "true";
+  };
+  const onDragLeave = (e: DragEvent) => {
+    if (!e.relatedTarget) delete root.dataset.dropping;
+  };
+  const onDrop = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    delete root.dataset.dropping;
+    attachments.add(Array.from(e.dataTransfer?.files ?? []));
+    setDrawer(true);
+    input.focus();
+  };
+  window.addEventListener("dragover", onDragOver);
+  window.addEventListener("dragleave", onDragLeave);
+  window.addEventListener("drop", onDrop);
+  input.addEventListener("paste", (e) => {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (!files.length) return;
+    e.preventDefault();
+    attachments.add(files);
+  });
 
   // Click the orb: stop talking if he is; take the mic if another HUD has
   // it; otherwise listen without the wake word.
@@ -528,6 +572,9 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       timers.forEach((t) => window.clearInterval(t));
       cancelAnimationFrame(raf);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
       window.removeEventListener("focus", takeOnFocus);
       document.removeEventListener("visibilitychange", takeOnFocus);
       lease.onChange(null);
