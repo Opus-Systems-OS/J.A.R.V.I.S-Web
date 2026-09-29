@@ -1,10 +1,12 @@
 // What Jarvis says the moment you unlock. A template over live data, not a
 // model call: instant, free (bar the voice's characters), and it never
-// invents a number. Stage 5 adds the briefing sources (weather, mail,
-// YouTube, calendar, Whoop); until then it reports on the systems, and
-// warns when a balance is low (the credit ledger).
+// invents a number. The briefing (weather, calendar, mail, YouTube, WHOOP,
+// Buffer — only what's worth saying), then the systems, then any low
+// balance. Each unlock is recorded as a visit, so "new since you were last
+// here" means since the last unlock on any device.
 
-import { get, webGet } from "../api";
+import { get, web, webGet } from "../api";
+import { briefingLines, type Briefing } from "./briefing";
 import { creditLine, type Credits } from "./credits";
 import { compactOps } from "./tools";
 
@@ -37,12 +39,18 @@ export function systemsLine(rows: { service: string; state: string; headline: st
 }
 
 export async function greeting(): Promise<string> {
-  const [ops, rig, credits] = await Promise.allSettled([
+  const visit = await web<{ previous: string | null }>("visit", {}).catch(() => ({ previous: null }));
+  const since = visit.previous ? `?since=${encodeURIComponent(visit.previous)}` : "";
+  const [ops, rig, credits, briefing] = await Promise.allSettled([
     get<Record<string, unknown>>("ops"),
     get<{ online?: boolean }>("rig"),
     webGet<Credits>("credits"),
+    get<Briefing>(`briefing${since}`),
   ]);
   const parts = [`${salutation()}.`];
+  // No briefing (the key lacks sources:read, or the API is older): the
+  // greeting is the systems report it always was.
+  if (briefing.status === "fulfilled") parts.push(...briefingLines(briefing.value));
   parts.push(ops.status === "fulfilled" ? systemsLine(compactOps(ops.value)) : "I can't reach the operations feed at the moment.");
   if (rig.status === "fulfilled" && rig.value.online) parts.push("The rig is up, if you need local models.");
   const warning = credits.status === "fulfilled" ? creditLine(credits.value) : null;

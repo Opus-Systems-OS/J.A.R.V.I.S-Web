@@ -25,6 +25,7 @@ const SYSTEM_SUFFIX = [
   "Send one message per turn: say briefly what you are about to do only if it will take more than a few seconds.",
   "Use opus_status for anything about the state of his systems and fleet_usage for spend, rather than guessing.",
   "Use fleet_jobs to find the jobs you dispatched; the HUD announces when one finishes or has a question.",
+  "Use briefing for his day (weather, calendar, email, YouTube, WHOOP, Buffer) and set_reminder when he asks to be reminded.",
 ].join(" ");
 
 export const MODELS: { id: string; label: string }[] = [

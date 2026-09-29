@@ -5,7 +5,9 @@
 // except `open_panel`, which only moves the HUD.
 
 import { get } from "../api";
+import { compactBriefing, type Briefing } from "./briefing";
 import { compactJobs, type Job } from "./jobs";
+import * as reminders from "./reminders";
 
 export interface ToolDef {
   type: "custom";
@@ -48,6 +50,51 @@ export const TOOLS: ToolDef[] = [
       "agent, title, status (running, idle, terminated) and when it last changed. Use it to find a job's session_id " +
       "when he asks how a job is going, then get_session_status for what it said. Works across conversations.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    type: "custom",
+    name: "briefing",
+    description:
+      "His day right now: weather in Calabasas, today's calendar, unread Gmail (newest senders and subjects), YouTube " +
+      "views this week against last, WHOOP recovery, sleep and strain, and the Buffer posting queue. Each source is a " +
+      "row with state ok/warn/down; a down row says why (e.g. not connected yet). Use it for 'how's my day', 'any " +
+      "email', 'what's on today', 'how did I sleep', and before summarizing his morning.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    type: "custom",
+    name: "set_reminder",
+    description:
+      "Set a reminder that the HUD speaks when it is due (or at his next unlock if no HUD is open). Give either " +
+      "in_minutes, or at as Calabasas wall time 'YYYY-MM-DDTHH:MM' (or RFC 3339 with an offset). If you don't know " +
+      "today's date, call list_reminders first: it returns the current time. Confirm the time back to him in words.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "What to remind him of, as it should be said: 'call Josh about the invoice'" },
+        at: { type: "string", description: "Calabasas wall time, e.g. 2026-09-29T09:00" },
+        in_minutes: { type: "number", description: "Minutes from now, instead of at" },
+      },
+      required: ["text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "list_reminders",
+    description: "The reminders not yet spoken (id, text, due_at, due), and the current time in Calabasas as `now`.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    type: "custom",
+    name: "cancel_reminder",
+    description: "Cancel a reminder by the id list_reminders gave.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "number" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
   },
   {
     type: "custom",
@@ -119,6 +166,37 @@ export async function runTool(
         const since = typeof args.since === "string" && args.since ? `?since=${encodeURIComponent(args.since)}` : "";
         const usage = await get<Json>(`usage${since}`);
         return { content: JSON.stringify(compactUsage(usage)) };
+      }
+      case "briefing": {
+        const b = await get<Briefing>("briefing");
+        return { content: JSON.stringify(compactBriefing(b)) };
+      }
+      case "set_reminder": {
+        const text = typeof args.text === "string" ? args.text.trim() : "";
+        const at = reminders.resolveAt(args);
+        if (!text || !at) {
+          return {
+            content: `need text and either in_minutes or at as YYYY-MM-DDTHH:MM (Calabasas); it is now ${reminders.laNow()}`,
+            is_error: true,
+          };
+        }
+        const r = await reminders.create(text, at);
+        return { content: JSON.stringify({ set: { id: r.id, text: r.text, due_at: reminders.laIso(new Date(r.due_at)) }, now: reminders.laNow() }) };
+      }
+      case "list_reminders": {
+        const list = await reminders.pending();
+        return {
+          content: JSON.stringify({
+            now: reminders.laNow(),
+            reminders: list.map((r) => ({ id: r.id, text: r.text, due_at: reminders.laIso(new Date(r.due_at)), due: r.due })),
+          }),
+        };
+      }
+      case "cancel_reminder": {
+        const id = Number(args.id);
+        if (!Number.isInteger(id)) return { content: "id must be a reminder id from list_reminders", is_error: true };
+        await reminders.cancel(id);
+        return { content: `cancelled reminder ${id}` };
       }
       case "fleet_jobs":
         return { content: JSON.stringify(compactJobs(ui.jobs())) };

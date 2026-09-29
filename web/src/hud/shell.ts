@@ -17,6 +17,7 @@ import { TerminalView, terminalTask } from "./terminal";
 import { compactOps } from "./tools";
 import { Attachments } from "./attach";
 import { agentName, JobWatch, type Job } from "./jobs";
+import { ReminderWatch } from "./reminders";
 import { Transcript } from "./transcript";
 import { isoSeconds, UsageView } from "./usage";
 
@@ -573,6 +574,14 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       }),
     );
   };
+  const reminderWatch = new ReminderWatch({
+    speaks: () => lease.held,
+    announce: (line) => {
+      transcript.note(line);
+      lastReplyAsked = false;
+      speaker.say(line);
+    },
+  });
   const jobWatch = new JobWatch({
     onJobs: renderJobs,
     onAnnounce: (line) => {
@@ -616,12 +625,16 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     lastReplyAsked = false; // the greeting never opens a follow-up
     // Only the HUD with the mic speaks it; another open window just shows it.
     if (held) speaker.say(line);
+    // Then anything that came due while no HUD was open.
+    void reminderWatch.check();
+    reminderWatch.start();
   });
 
   return {
     unmount() {
       timers.forEach((t) => window.clearInterval(t));
       jobWatch.stop();
+      reminderWatch.stop();
       cancelAnimationFrame(raf);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("dragover", onDragOver);
