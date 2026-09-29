@@ -95,8 +95,9 @@ Do not start a stage before the one above it works live.
 3. **Fleet, Systems map, Terminal.** One HUD holds the mic at a time
    (`/web/mic`).
 4. **Usage tab and credit warnings.**
-5. **Briefing, sources, reminders.** Gmail, Calendar, YouTube, Whoop, Roblox
-   and Buffer.
+5. **Briefing, sources, reminders.** Weather, Gmail, Calendar, YouTube, WHOOP
+   and Buffer (API `/v1/briefing`); reminders and the last visit live in
+   `jarvis-web`. Roblox is parked.
 
 The plan, with each stage's exit test, is recorded in Iron-Fleet
 `docs/centralization-plan.md` ("J.A.R.V.I.S. on the web").

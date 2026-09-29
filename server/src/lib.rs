@@ -16,6 +16,7 @@ pub mod credits;
 pub mod db;
 pub mod error;
 pub mod mic;
+pub mod reminders;
 pub mod request_id;
 
 use axum::http::{header, HeaderName, HeaderValue};
@@ -103,6 +104,13 @@ pub fn app(state: AppState) -> Router {
         .route("/auth/logout", post(auth::logout))
         .route("/web/mic", post(mic::mic))
         .route("/web/credits", get(credits::get).post(credits::update))
+        .route(
+            "/web/reminders",
+            get(reminders::list).post(reminders::create),
+        )
+        .route("/web/reminders/{id}/cancel", post(reminders::cancel))
+        .route("/web/reminders/{id}/delivered", post(reminders::delivered))
+        .route("/web/visit", post(reminders::visit))
         .route_layer(from_fn_with_state(state.clone(), auth::require_session));
 
     let api = Router::new()

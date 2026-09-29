@@ -1,6 +1,7 @@
 //! SQLite for what this site owns: unlocked browser sessions, failed unlock
-//! attempts, and the credit ledger — the Anthropic balance you typed after a
-//! top-up and your warning thresholds. Fleet state, usage and everything
+//! attempts, the credit ledger — the Anthropic balance you typed after a
+//! top-up and your warning thresholds — the reminders Jarvis sets, and when
+//! you last opened the HUD. Fleet state, usage and everything
 //! Jarvis knows are read live through the API — never stored here. Times
 //! are unix seconds.
 
@@ -29,7 +30,28 @@ CREATE TABLE IF NOT EXISTS credit_settings (
   fish_warn_cents       INTEGER NOT NULL DEFAULT 200
 );
 INSERT OR IGNORE INTO credit_settings (id) VALUES (1);
+CREATE TABLE IF NOT EXISTS reminders (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  text          TEXT NOT NULL,
+  due_at        INTEGER NOT NULL,
+  created_at    INTEGER NOT NULL,
+  delivered_at  INTEGER,             -- spoken by a HUD
+  cancelled_at  INTEGER
+);
+CREATE TABLE IF NOT EXISTS visits (
+  id       INTEGER PRIMARY KEY CHECK (id = 1),
+  last_at  INTEGER NOT NULL
+);
 "#;
+
+/// A reminder that is still to be spoken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reminder {
+    pub id: i64,
+    pub text: String,
+    pub due_at: i64,
+    pub created_at: i64,
+}
 
 /// The ledger's one row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +191,81 @@ impl Db {
         })
     }
 
+    // ---- reminders -------------------------------------------------------------
+
+    pub fn add_reminder(&self, text: &str, due_at: i64) -> Result<i64> {
+        let now = now();
+        self.with(|c| {
+            // Spoken or cancelled more than 30 days ago: gone.
+            c.execute(
+                "DELETE FROM reminders WHERE COALESCE(delivered_at, cancelled_at) < ?1",
+                [now - 30 * 86_400],
+            )?;
+            c.execute(
+                "INSERT INTO reminders (text, due_at, created_at) VALUES (?1, ?2, ?3)",
+                params![text, due_at, now],
+            )?;
+            Ok(c.last_insert_rowid())
+        })
+    }
+
+    /// Not yet spoken and not cancelled, soonest first.
+    pub fn pending_reminders(&self) -> Result<Vec<Reminder>> {
+        self.with(|c| {
+            c.prepare(
+                "SELECT id, text, due_at, created_at FROM reminders
+                 WHERE delivered_at IS NULL AND cancelled_at IS NULL ORDER BY due_at, id",
+            )?
+            .query_map([], |r| {
+                Ok(Reminder {
+                    id: r.get(0)?,
+                    text: r.get(1)?,
+                    due_at: r.get(2)?,
+                    created_at: r.get(3)?,
+                })
+            })?
+            .collect()
+        })
+    }
+
+    /// Mark a pending reminder spoken (`delivered`) or cancelled. `false`
+    /// when there is no such pending reminder.
+    pub fn close_reminder(&self, id: i64, delivered: bool) -> Result<bool> {
+        let col = if delivered {
+            "delivered_at"
+        } else {
+            "cancelled_at"
+        };
+        self.with(|c| {
+            c.execute(
+                &format!(
+                    "UPDATE reminders SET {col} = ?2
+                     WHERE id = ?1 AND delivered_at IS NULL AND cancelled_at IS NULL"
+                ),
+                params![id, now()],
+            )
+            .map(|n| n == 1)
+        })
+    }
+
+    // ---- visits ----------------------------------------------------------------
+
+    /// When the HUD was last opened (unix seconds), and now is the new last.
+    pub fn visit(&self) -> Result<Option<i64>> {
+        let now = now();
+        self.with(|c| {
+            let prev: Option<i64> = c
+                .query_row("SELECT last_at FROM visits WHERE id = 1", [], |r| r.get(0))
+                .optional()?;
+            c.execute(
+                "INSERT INTO visits (id, last_at) VALUES (1, ?1)
+                 ON CONFLICT(id) DO UPDATE SET last_at = excluded.last_at",
+                [now],
+            )?;
+            Ok(prev)
+        })
+    }
+
     // ---- credit ledger -------------------------------------------------------
 
     pub fn credits(&self) -> Result<CreditSettings> {
@@ -219,6 +316,31 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reminders_are_pending_until_spoken_or_cancelled() {
+        let db = Db::in_memory().unwrap();
+        let later = db.add_reminder("call Josh", now() + 3600).unwrap();
+        let sooner = db.add_reminder("stand up", now() + 60).unwrap();
+        let p = db.pending_reminders().unwrap();
+        assert_eq!(
+            p.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![sooner, later]
+        );
+        assert!(db.close_reminder(sooner, true).unwrap());
+        assert!(!db.close_reminder(sooner, false).unwrap(), "already spoken");
+        assert!(db.close_reminder(later, false).unwrap());
+        assert!(db.pending_reminders().unwrap().is_empty());
+        assert!(!db.close_reminder(999, true).unwrap());
+    }
+
+    #[test]
+    fn a_visit_returns_the_previous_one() {
+        let db = Db::in_memory().unwrap();
+        assert_eq!(db.visit().unwrap(), None);
+        let first = db.visit().unwrap().unwrap();
+        assert!((now() - first).abs() < 5);
+    }
 
     #[test]
     fn credit_ledger_defaults_and_patches() {

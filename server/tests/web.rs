@@ -710,3 +710,69 @@ async fn credits_reject_bad_updates() {
         .json();
     assert_eq!(j["anthropic"]["anchor_cents"], Value::Null);
 }
+
+#[tokio::test]
+async fn reminders_and_visits_end_to_end() {
+    let h = harness().await;
+    let r = send(&h, bff(Method::GET, "/web/reminders", None, None)).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let cookie = unlock(&h).await;
+
+    let at = (time::OffsetDateTime::now_utc() + time::Duration::hours(2))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/reminders",
+            Some(&cookie),
+            Some(json!({"text": " call Josh ", "at": at})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let id = r.json()["id"].as_i64().unwrap();
+    assert_eq!(r.json()["text"], "call Josh");
+    assert_eq!(r.json()["due"], false);
+
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/reminders",
+            Some(&cookie),
+            Some(json!({"text": "x", "at": "tomorrow"})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+
+    let r = send(&h, bff(Method::GET, "/web/reminders", Some(&cookie), None)).await;
+    assert_eq!(r.json()["reminders"].as_array().unwrap().len(), 1);
+
+    let path = format!("/web/reminders/{id}/cancel");
+    assert_eq!(
+        send(&h, bff(Method::POST, &path, Some(&cookie), None))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&h, bff(Method::POST, &path, Some(&cookie), None))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let r = send(&h, bff(Method::GET, "/web/reminders", Some(&cookie), None)).await;
+    assert!(r.json()["reminders"].as_array().unwrap().is_empty());
+
+    let first = send(&h, bff(Method::POST, "/web/visit", Some(&cookie), None)).await;
+    assert_eq!(first.json()["previous"], Value::Null);
+    let second = send(&h, bff(Method::POST, "/web/visit", Some(&cookie), None)).await;
+    assert!(second.json()["previous"].as_str().unwrap().ends_with('Z'));
+    assert!(
+        h.seen.lock().unwrap().is_empty(),
+        "nothing here reaches the API"
+    );
+}
