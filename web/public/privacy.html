@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy · J.A.R.V.I.S.</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/privacy.css">
+</head>
+<body>
+<main>
+<h1>Privacy Policy</h1>
+<p class="meta">J.A.R.V.I.S. (Opus Systems OS) · Effective 29 September 2026</p>
+
+<h2>What this is</h2>
+<p>J.A.R.V.I.S. is a personal assistant built and run by James Walker for his own use. It is not offered to the public: the site at <code>jarvis.opustower.dev</code> is password-protected, and the only account whose data it reads is its owner's. This policy says what it reads, why, where that data goes, and how to stop it.</p>
+
+<h2>What it reads</h2>
+<p>Every connection is read-only. J.A.R.V.I.S. never sends email, changes calendar events, posts, or edits anything in these services.</p>
+<table>
+<thead><tr><th>Service</th><th>Permission</th><th>What is read</th></tr></thead>
+<tbody>
+<tr><td>Gmail</td><td><code>gmail.readonly</code></td><td>The number of unread messages in the inbox, and the sender, subject and time of the ten newest unread messages. Message bodies are not read.</td></tr>
+<tr><td>Google Calendar</td><td><code>calendar.readonly</code></td><td>Today's events on the primary calendar: title, start and end time, location.</td></tr>
+<tr><td>YouTube</td><td><code>yt-analytics.readonly</code>, <code>youtube.readonly</code></td><td>The owner's channel title and subscriber count, and total views and subscribers gained or lost over the last two weeks.</td></tr>
+<tr><td>WHOOP</td><td><code>read:recovery</code>, <code>read:sleep</code>, <code>read:cycles</code>, <code>offline</code></td><td>The latest recovery score, resting heart rate, heart-rate variability, sleep performance and day strain.</td></tr>
+<tr><td>Buffer</td><td>API key</td><td>The text and scheduled time of posts waiting in the queue.</td></tr>
+</tbody>
+</table>
+<p>Weather comes from Open-Meteo for a fixed location and involves no personal data.</p>
+
+<h2>How it is used</h2>
+<p>Only to brief the owner. That means a spoken greeting when he opens his own password-protected dashboard ("it's 67 degrees, you have two new emails, your first meeting is at nine"), and answers when he asks J.A.R.V.I.S. about his day. The data is not used for advertising, profiling, or anything unrelated to that briefing, and it is never sold.</p>
+
+<h2>Where it goes</h2>
+<ul>
+<li><strong>Anthropic.</strong> J.A.R.V.I.S.'s answers are written by Claude through Anthropic's API. When the owner asks about his day, the relevant rows (for example, the senders and subjects above) are sent to Anthropic as part of that conversation. Anthropic keeps the conversation's history so it can be continued. It processes this data under its commercial terms for API customers. No other AI provider receives this data.</li>
+<li><strong>Hosting.</strong> The service runs on a server rented from DigitalOcean in the United States. Its nightly backups are encrypted before they are stored with Cloudflare.</li>
+<li>No one else. The data is not shared with, or transferred to, any other person or company.</li>
+</ul>
+
+<h2>What is stored, and for how long</h2>
+<ul>
+<li><strong>Sign-in tokens</strong> for Google and WHOOP are kept in the service's database on the server, and in its encrypted backups, until the connection is revoked. They are never shown to any client, including the owner's own browser.</li>
+<li><strong>What the sources return</strong> is held in memory for at most five minutes, so that repeated requests don't call Google or WHOOP again. It is not written to disk.</li>
+<li><strong>Reminders</strong> the owner asks for, and the time of his last visit, are kept in the site's own database. Reminders are deleted 30 days after they are spoken or cancelled.</li>
+</ul>
+
+<h2>Google user data</h2>
+<p>J.A.R.V.I.S.'s use and transfer to any other app of information received from Google APIs will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. Google user data is not used to develop, improve or train generalized AI or machine-learning models.</p>
+
+<h2>Turning it off</h2>
+<p>Access can be withdrawn at any time. For Google, remove J.A.R.V.I.S. at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>. For WHOOP, remove it in the WHOOP app's connected-apps settings. For Buffer, revoke the API key in Buffer's settings. Once access is revoked, the service can no longer read that source, and its stored tokens are deleted on request.</p>
+
+<h2>Security</h2>
+<p>All traffic is encrypted with HTTPS. The dashboard requires a password, and API credentials stay on the server. Each service is granted the narrowest read-only permission that the briefing needs.</p>
+
+<h2>Changes and contact</h2>
+<p>If this policy changes, the new version will be posted here with a new effective date. For questions, contact the owner through <a href="https://github.com/Opus-Systems-OS">github.com/Opus-Systems-OS</a>.</p>
+</main>
+</body>
+</html>
