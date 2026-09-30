@@ -77,7 +77,7 @@ Setting or changing the passphrase (you type it; it is never echoed or
 stored, only its hash):
 
 ```sh
-ssh -t root@198.199.66.109 "cd /opt/iron-fleet/deploy/droplet && docker compose run --rm jarvis-web hash-password"
+ssh -t root@198.199.66.109 "cd /opt/iron-fleet/deploy/droplet && docker compose run --rm jarvis-web jarvis-web hash-password"
 # put the printed $argon2id$… in .env as JARVIS_WEB_PASSWORD_HASH (single-quoted),
 # then: docker compose up -d jarvis-web
 ```
