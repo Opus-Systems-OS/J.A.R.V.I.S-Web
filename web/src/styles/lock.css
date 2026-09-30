@@ -284,3 +284,92 @@
     letter-spacing: 0.08em;
   }
 }
+
+/* ---- who is it --------------------------------------------------------------- */
+
+.lock-profiles {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.lock-profiles[hidden],
+.lock-form[hidden],
+.lock-who[hidden] {
+  display: none;
+}
+
+.lock-profiles > .frame-label {
+  margin: 0;
+  text-align: center;
+}
+
+.profile-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1rem;
+}
+
+.profile-btn {
+  position: relative;
+  padding: 1.1rem 1rem;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  backdrop-filter: blur(6px);
+  color: var(--accent-3);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.15rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.profile-btn::before,
+.profile-btn::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent);
+  pointer-events: none;
+}
+
+.profile-btn::before {
+  top: -2px;
+  left: -2px;
+  border-right: 0;
+  border-bottom: 0;
+}
+
+.profile-btn::after {
+  bottom: -2px;
+  right: -2px;
+  border-left: 0;
+  border-top: 0;
+}
+
+.profile-btn:hover,
+.profile-btn:focus-visible {
+  border-color: var(--line-strong);
+  box-shadow: var(--glow-soft);
+  outline: none;
+}
+
+.lock-who {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.lock-who-name {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.15rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent-3);
+}

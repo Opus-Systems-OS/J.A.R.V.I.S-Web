@@ -82,6 +82,20 @@ ssh -t root@198.199.66.109 "cd /opt/iron-fleet/deploy/droplet && docker compose 
 # then: docker compose up -d jarvis-web
 ```
 
+### Profiles
+
+The lock screen asks who you are, then that profile's passphrase.
+
+- **Mr. Walker** is the owner: `JARVIS_WEB_PASSWORD_HASH` + `WEB_API_KEY`, every panel.
+- **Mr. Powers** appears when both `JARVIS_WEB_POWERS_PASSWORD_HASH` and
+  `WEB_POWERS_API_KEY` are set (the same `hash-password` step; he types his own).
+  - Least privilege: his own conversation on the `jarvis-powers` agent, his own
+    reminders, visits and microphone lease, and the Fleet, Usage and Terminal tabs.
+  - No Systems, Jobs, briefing or credit ledger.
+  - His key is limited to `jarvis-powers` by the API (`opus-api keys create …
+    --agents jarvis-powers`), so it cannot reach anyone else's sessions whatever
+    the page asks.
+
 ## Build order
 
 Do not start a stage before the one above it works live.

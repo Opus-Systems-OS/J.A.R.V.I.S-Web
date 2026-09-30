@@ -3,12 +3,13 @@
 //! due, or at the next unlock if no HUD was open), and when you last opened
 //! the HUD (so the greeting can say what changed since).
 
+use crate::config::Profile;
 use crate::db::Reminder;
 use crate::error::{Error, Result};
 use crate::AppState;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
-use axum::Json;
+use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -82,12 +83,15 @@ pub fn validate(req: &NewReminder, now: i64) -> Result<i64> {
     Ok(at.max(now))
 }
 
-pub async fn list(State(state): State<AppState>) -> Result<Json<Reminders>> {
+pub async fn list(
+    State(state): State<AppState>,
+    Extension(profile): Extension<Profile>,
+) -> Result<Json<Reminders>> {
     let now = crate::db::now();
     Ok(Json(Reminders {
         reminders: state
             .db
-            .pending_reminders()?
+            .pending_reminders(&profile.id)?
             .iter()
             .map(|r| out(r, now))
             .collect(),
@@ -96,13 +100,14 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<Reminders>> {
 
 pub async fn create(
     State(state): State<AppState>,
+    Extension(profile): Extension<Profile>,
     body: std::result::Result<Json<NewReminder>, JsonRejection>,
 ) -> Result<Json<ReminderOut>> {
     let Json(req) = body.map_err(|e| Error::InvalidRequest(e.body_text()))?;
     let now = crate::db::now();
     let due_at = validate(&req, now)?;
     let text = req.text.trim().to_owned();
-    let id = state.db.add_reminder(&text, due_at)?;
+    let id = state.db.add_reminder(&profile.id, &text, due_at)?;
     // The time, never the words: a reminder can be personal.
     tracing::info!(id, due_in_secs = due_at - now, "reminder set");
     Ok(Json(out(
@@ -118,20 +123,27 @@ pub async fn create(
 
 pub async fn cancel(
     State(state): State<AppState>,
+    Extension(profile): Extension<Profile>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>> {
-    close(&state, id, false)
+    close(&state, &profile, id, false)
 }
 
 pub async fn delivered(
     State(state): State<AppState>,
+    Extension(profile): Extension<Profile>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>> {
-    close(&state, id, true)
+    close(&state, &profile, id, true)
 }
 
-fn close(state: &AppState, id: i64, delivered: bool) -> Result<Json<serde_json::Value>> {
-    if !state.db.close_reminder(id, delivered)? {
+fn close(
+    state: &AppState,
+    profile: &Profile,
+    id: i64,
+    delivered: bool,
+) -> Result<Json<serde_json::Value>> {
+    if !state.db.close_reminder(&profile.id, id, delivered)? {
         return Err(Error::NotFound);
     }
     Ok(Json(serde_json::json!({ "id": id, "closed": true })))
@@ -144,9 +156,12 @@ pub struct Visit {
 }
 
 /// Called once per unlock: returns the last visit and records this one.
-pub async fn visit(State(state): State<AppState>) -> Result<Json<Visit>> {
+pub async fn visit(
+    State(state): State<AppState>,
+    Extension(profile): Extension<Profile>,
+) -> Result<Json<Visit>> {
     Ok(Json(Visit {
-        previous: state.db.visit()?.map(rfc3339),
+        previous: state.db.visit(&profile.id)?.map(rfc3339),
     }))
 }
 

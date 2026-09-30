@@ -1,8 +1,12 @@
 // The lock screen. A fresh load always lands here, and every unlock posts
 // the passphrase — by design, so the click that unlocks is also the user
 // gesture the browser needs before it will let Jarvis speak or listen.
+// With more than one profile it asks who you are first (a button each),
+// then that profile's passphrase.
 
-import { ApiError, unlock } from "./api";
+import { ApiError, profiles, unlock, webGet, type Profile, type ProfileChoice } from "./api";
+
+const OWNER: ProfileChoice = { id: "walker", name: "Mr. Walker" };
 
 const el = <T extends HTMLElement>(id: string): T => {
   const found = document.getElementById(id);
@@ -15,8 +19,13 @@ const el = <T extends HTMLElement>(id: string): T => {
  * browser counts as the user's own action — so audio can be unlocked
  * before any network wait lets that moment lapse.
  */
-export function showLock(onUnlocked: () => void, onGesture?: () => void): void {
+export function showLock(onUnlocked: (me: Profile) => void, onGesture?: () => void): void {
   const root = el<HTMLElement>("lock");
+  const picker = el<HTMLElement>("lock-profiles");
+  const list = el<HTMLDivElement>("lock-profile-list");
+  const whoRow = el<HTMLDivElement>("lock-who-row");
+  const who = el<HTMLSpanElement>("lock-who");
+  const back = el<HTMLButtonElement>("lock-back");
   const form = el<HTMLFormElement>("lock-form");
   const input = el<HTMLInputElement>("lock-password");
   const submit = el<HTMLButtonElement>("lock-submit");
@@ -29,12 +38,55 @@ export function showLock(onUnlocked: () => void, onGesture?: () => void): void {
   input.value = "";
   status.textContent = "";
   status.classList.remove("error");
-  input.focus();
-
   const say = (text: string, error = false) => {
     status.textContent = text;
     status.classList.toggle("error", error);
   };
+
+  let chosen: ProfileChoice = OWNER;
+  let choices: ProfileChoice[] = [];
+
+  /** The passphrase step, for `p`. */
+  const choose = (p: ProfileChoice) => {
+    chosen = p;
+    picker.hidden = true;
+    form.hidden = false;
+    whoRow.hidden = choices.length < 2;
+    who.textContent = p.name;
+    input.value = "";
+    input.focus();
+  };
+  /** The "who is it?" step. */
+  const pick = () => {
+    form.hidden = true;
+    picker.hidden = false;
+    root.classList.remove("denied");
+    say("");
+    list.querySelector<HTMLButtonElement>("button")?.focus();
+  };
+  back.onclick = pick;
+  form.hidden = true;
+  picker.hidden = true;
+  profiles()
+    .then((ps) => {
+      choices = ps;
+      if (ps.length < 2) {
+        choose(ps[0] ?? OWNER);
+        return;
+      }
+      list.replaceChildren(
+        ...ps.map((p) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "profile-btn";
+          b.textContent = p.name;
+          b.onclick = () => choose(p);
+          return b;
+        }),
+      );
+      pick();
+    })
+    .catch(() => choose(OWNER));
 
   const holdOff = (seconds: number) => {
     lockedUntil = Date.now() + seconds * 1000;
@@ -65,14 +117,15 @@ export function showLock(onUnlocked: () => void, onGesture?: () => void): void {
     root.classList.remove("denied");
     say("Verifying…");
     try {
-      await unlock(input.value);
+      await unlock(chosen.id, input.value);
       input.value = "";
-      say("Access granted");
+      const me = await webGet<Profile>("me");
+      say(`Welcome back, ${me.name}`);
       root.classList.add("granted");
       window.setTimeout(() => root.classList.add("leaving"), 450);
       window.setTimeout(() => {
         root.hidden = true;
-        onUnlocked();
+        onUnlocked(me);
       }, 1000);
     } catch (e) {
       input.select();

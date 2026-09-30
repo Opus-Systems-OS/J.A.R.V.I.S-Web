@@ -11,6 +11,7 @@
 //! Both upstream reads go through this site's own key, like `/bff`. One
 //! failing never fails the other: its half carries `error` instead.
 
+use crate::config::Profile;
 use crate::db::{CreditPatch, CreditSettings};
 use crate::error::{Error, Result};
 use crate::request_id::{RequestId, HEADER as REQUEST_ID};
@@ -171,7 +172,7 @@ async fn api_get(
     let res = state
         .http
         .get(format!("{}{}", state.config.api_url, path_and_query))
-        .bearer_auth(&state.config.api_key)
+        .bearer_auth(&state.config.owner().api_key)
         .header(REQUEST_ID, request_id)
         .timeout(UPSTREAM_TIMEOUT)
         .send()
@@ -207,16 +208,20 @@ async fn read(state: &AppState, request_id: &str) -> Result<Credits> {
 
 pub async fn get(
     State(state): State<AppState>,
+    Extension(profile): Extension<Profile>,
     Extension(RequestId(request_id)): Extension<RequestId>,
 ) -> Result<Json<Credits>> {
+    crate::auth::require_full(&profile)?;
     Ok(Json(read(&state, &request_id).await?))
 }
 
 pub async fn update(
     State(state): State<AppState>,
+    Extension(profile): Extension<Profile>,
     Extension(RequestId(request_id)): Extension<RequestId>,
     body: std::result::Result<Json<CreditsUpdate>, JsonRejection>,
 ) -> Result<Json<Credits>> {
+    crate::auth::require_full(&profile)?;
     let Json(req) = body.map_err(|e| Error::InvalidRequest(e.body_text()))?;
     for (name, v) in [
         ("anchor_cents", req.anchor_cents),

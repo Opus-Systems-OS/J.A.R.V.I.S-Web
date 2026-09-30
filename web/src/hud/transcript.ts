@@ -186,9 +186,11 @@ export class Transcript {
 
   /**
    * Files the agent wrote to /mnt/session/outputs/, each a download link
-   * (the BFF streams it with its name). Each file is shown once.
+   * (the BFF streams it with its name). Each file is shown once. The
+   * session rides along: a profile limited to its own agent may download
+   * only through one of its own sessions.
    */
-  outputs(files: OutputFile[]) {
+  outputs(files: OutputFile[], sessionId: string) {
     const fresh = files.filter((f) => f.downloadable && !this.seen.has(f.id));
     if (!fresh.length) return;
     const atBottom = this.list.scrollHeight - this.list.scrollTop - this.list.clientHeight < 60;
@@ -198,7 +200,7 @@ export class Transcript {
       this.seen.add(f.id);
       const a = document.createElement("a");
       a.className = "file-chip file-chip-out";
-      a.href = `/bff/v1/files/${encodeURIComponent(f.id)}/content`;
+      a.href = `/bff/v1/files/${encodeURIComponent(f.id)}/content?session=${encodeURIComponent(sessionId)}`;
       a.download = f.filename;
       a.textContent = f.filename;
       a.title = `Download ${f.filename}`;

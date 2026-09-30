@@ -3,21 +3,22 @@
 // invents a number. The briefing (weather, calendar, mail, YouTube, WHOOP,
 // Buffer — only what's worth saying), then the systems, then any low
 // balance. Each unlock is recorded as a visit, so "new since you were last
-// here" means since the last unlock on any device.
+// here" means since the last unlock on any device. Anyone but the owner is
+// greeted by name and nothing else: the day and the systems are his.
 
-import { get, web, webGet } from "../api";
+import { get, web, webGet, type Profile } from "../api";
 import { briefingLines, type Briefing } from "./briefing";
 import { creditLine, type Credits } from "./credits";
 import { compactOps } from "./tools";
 
 const TZ = "America/Los_Angeles";
 
-export function salutation(now = new Date()): string {
+export function salutation(now = new Date(), name = "Mr. Walker"): string {
   const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "numeric", hour12: false }).format(now));
-  if (hour < 5) return "Burning the midnight oil, Mr. Walker";
-  if (hour < 12) return "Good morning, Mr. Walker";
-  if (hour < 18) return "Good afternoon, Mr. Walker";
-  return "Good evening, Mr. Walker";
+  if (hour < 5) return `Burning the midnight oil, ${name}`;
+  if (hour < 12) return `Good morning, ${name}`;
+  if (hour < 18) return `Good afternoon, ${name}`;
+  return `Good evening, ${name}`;
 }
 
 const WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
@@ -38,8 +39,9 @@ export function systemsLine(rows: { service: string; state: string; headline: st
   return `${lead}; ${list}.`;
 }
 
-export async function greeting(): Promise<string> {
+export async function greeting(profile: Profile): Promise<string> {
   const visit = await web<{ previous: string | null }>("visit", {}).catch(() => ({ previous: null }));
+  if (!profile.full) return `${salutation(new Date(), profile.name)}. What can I do for you?`;
   const since = visit.previous ? `?since=${encodeURIComponent(visit.previous)}` : "";
   const [ops, rig, credits, briefing] = await Promise.allSettled([
     get<Record<string, unknown>>("ops"),
