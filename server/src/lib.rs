@@ -102,6 +102,7 @@ pub fn app(state: AppState) -> Router {
     let bff = Router::new()
         .route("/bff/v1/{*rest}", any(bff::proxy))
         .route("/auth/logout", post(auth::logout))
+        .route("/web/me", get(auth::me))
         .route("/web/mic", post(mic::mic))
         .route("/web/credits", get(credits::get).post(credits::update))
         .route(
@@ -115,6 +116,7 @@ pub fn app(state: AppState) -> Router {
 
     let api = Router::new()
         .route("/auth/login", post(auth::login))
+        .route("/auth/profiles", get(auth::profiles))
         .route("/healthz", get(|| async { "ok" }))
         .merge(bff)
         .layer(from_fn(auth::require_csrf_header))

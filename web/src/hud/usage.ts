@@ -122,10 +122,12 @@ export class UsageView {
   private timer: number | undefined;
   private readonly $ = <T extends HTMLElement>(sel: string) => this.root.querySelector(sel) as T;
 
-  /** `onCredits` gets the fresh reading after you change the ledger. */
+  /** `onCredits` gets the fresh reading after you change the ledger.
+   * `credits: false` (anyone but the owner) shows spend only, no ledger. */
   constructor(
     private readonly root: HTMLElement,
     private readonly onCredits: (c: Credits) => void,
+    credits = true,
   ) {
     root.innerHTML = `
       <div class="usage">
@@ -191,6 +193,7 @@ export class UsageView {
         }),
     );
     this.$<HTMLButtonElement>("#usage-csv").onclick = () => void this.download();
+    if (!credits) this.root.querySelectorAll<HTMLElement>(".usage-credit").forEach((s) => (s.hidden = true));
     this.$<HTMLFormElement>("#anth-form").onsubmit = (e) => {
       e.preventDefault();
       void this.save("anth-anchor", "anchor_cents", "anth-note");

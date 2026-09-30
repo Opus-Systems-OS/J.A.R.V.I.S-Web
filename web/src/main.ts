@@ -8,7 +8,7 @@ import "./styles/hud.css";
 import "./styles/voice.css";
 import "./styles/views.css";
 
-import { LOCKED_EVENT } from "./api";
+import { LOCKED_EVENT, type Profile } from "./api";
 import { showLock } from "./lock";
 import { mountHud, type Hud } from "./hud/shell";
 import { Speaker } from "./hud/speaker";
@@ -27,8 +27,8 @@ function toLock() {
   showLock(toHud, () => speaker.prime());
 }
 
-function toHud() {
-  hud = mountHud(hudRoot, speaker, toLock);
+function toHud(me: Profile) {
+  hud = mountHud(hudRoot, speaker, toLock, me);
 }
 
 window.addEventListener(LOCKED_EVENT, () => {

@@ -4,7 +4,7 @@
 // — and owns nothing else: no fleet state, no conversation state beyond
 // the session bookmark Jarvis keeps.
 
-import { get, lock, type Me } from "../api";
+import { get, lock, type Me, type Profile } from "../api";
 import { CreditWatch, creditLine, dollars, fishDollars, level, type Credits } from "./credits";
 import { ago, FleetView } from "./fleet";
 import { greeting } from "./greeting";
@@ -14,14 +14,13 @@ import { MicLease } from "./micLease";
 import { Speaker } from "./speaker";
 import { SystemsView } from "./systems";
 import { TerminalView, terminalTask } from "./terminal";
-import { compactOps } from "./tools";
+import { compactOps, tabsFor } from "./tools";
 import { Attachments } from "./attach";
 import { agentName, JobWatch, type Job } from "./jobs";
 import { ReminderWatch } from "./reminders";
 import { Transcript } from "./transcript";
 import { isoSeconds, UsageView } from "./usage";
 
-const TABS = ["HUD", "Fleet", "Systems", "Usage", "Terminal"] as const;
 const DRAWER_KEY = "jarvis.drawer";
 
 const PANEL = (id: string, title: string, body: string) => `
@@ -40,11 +39,13 @@ const ORB_SVG = `
     <circle class="core" cx="100" cy="100" r="22" />
   </svg>`;
 
-const TEMPLATE = `
+/** The owner sees every panel; anyone else, their own conversation, fleet
+ * sessions, spend and terminal (no Systems, no Jobs, no credit ledger). */
+const template = (full: boolean) => `
   <header class="topbar">
     <div class="brand"><span class="brand-mark" aria-hidden="true"></span>J.A.R.V.I.S.</div>
     <nav class="tabs" role="tablist">
-      ${TABS.map((t, i) => `<button role="tab" class="tab" data-tab="${t}" aria-selected="${i === 0}">${t}</button>`).join("")}
+      ${tabsFor(full).map((t, i) => `<button role="tab" class="tab" data-tab="${t}" aria-selected="${i === 0}">${t}</button>`).join("")}
     </nav>
     <div class="readouts">
       <span class="chip" id="hud-mic" data-state="off" title="Microphone">Mic</span>
@@ -63,7 +64,7 @@ const TEMPLATE = `
   <div class="stage" data-view="HUD">
     <aside class="column column-left">
       ${PANEL("panel-fleet", "Fleet", `<ul class="rows recent" id="recent-rows"><li class="panel-empty">Reading the fleet…</li></ul>`)}
-      ${PANEL("panel-jobs", "Jobs", `<ul class="rows" id="job-rows"><li class="panel-empty">No jobs dispatched</li></ul>`)}
+      ${full ? PANEL("panel-jobs", "Jobs", `<ul class="rows" id="job-rows"><li class="panel-empty">No jobs dispatched</li></ul>`) : ""}
     </aside>
     <div class="center">
       <button class="orb" id="orb" data-state="idle" aria-label="Talk to Jarvis">${ORB_SVG}</button>
@@ -71,12 +72,12 @@ const TEMPLATE = `
       <p class="orb-sub" id="orb-sub"></p>
     </div>
     <aside class="column column-right">
-      ${PANEL("panel-systems", "Systems", `<ul class="rows" id="systems-rows"><li class="panel-empty">Reading the tower…</li></ul>`)}
+      ${full ? PANEL("panel-systems", "Systems", `<ul class="rows" id="systems-rows"><li class="panel-empty">Reading the tower…</li></ul>`) : ""}
       ${PANEL("panel-usage", "Usage", `<ul class="rows" id="usage-rows"><li class="panel-empty">Reading the ledger…</li></ul>`)}
     </aside>
   </div>
   <div class="view" data-view="Fleet" id="view-fleet" hidden></div>
-  <div class="view" data-view="Systems" id="view-systems" hidden></div>
+  ${full ? `<div class="view" data-view="Systems" id="view-systems" hidden></div>` : ""}
   <div class="view" data-view="Usage" id="view-usage" hidden></div>
   <div class="view" data-view="Terminal" id="view-terminal" hidden></div>
   </div>
@@ -146,8 +147,9 @@ export interface Hud {
 }
 
 /** `speaker` was primed inside the unlock click, so it may play audio. */
-export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => void): Hud {
-  root.innerHTML = TEMPLATE;
+export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => void, profile: Profile): Hud {
+  const full = profile.full;
+  root.innerHTML = template(full);
   root.dataset.tab = "HUD";
   root.hidden = false;
   root.classList.remove("entering");
@@ -168,20 +170,20 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   const timers: number[] = [];
 
   // ---- views ---------------------------------------------------------------
-  const fleetView = new FleetView($("#view-fleet"));
-  const systemsView = new SystemsView($("#view-systems"));
-  const usageView = new UsageView($("#view-usage"), (c) => watch.observe(c));
+  const fleetView = full ? new FleetView($("#view-fleet")) : new FleetView($("#view-fleet"), []);
+  const systemsView = full ? new SystemsView($("#view-systems")) : null;
+  const usageView = new UsageView($("#view-usage"), (c) => watch.observe(c), full);
   let current = "HUD";
   const openPanel = (tab: string) => {
     root.querySelectorAll<HTMLButtonElement>(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.tab === tab)));
     root.querySelectorAll<HTMLElement>("[data-view]").forEach((v) => (v.hidden = v.dataset.view !== tab));
     root.dataset.tab = tab;
     if (current === "Fleet") fleetView.hide();
-    if (current === "Systems") systemsView.hide();
+    if (current === "Systems") systemsView?.hide();
     if (current === "Usage") usageView.hide();
     current = tab;
     if (tab === "Fleet") fleetView.show();
-    if (tab === "Systems") systemsView.show();
+    if (tab === "Systems") systemsView?.show();
     if (tab === "Usage") usageView.show();
     if (tab === "Terminal") terminal.focus();
   };
@@ -283,7 +285,9 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     sessionId: () => jarvis.session,
   });
 
-  const jarvis = new Jarvis(transcript, {
+  const jarvis = new Jarvis(
+    transcript,
+    {
     jobs: () => jobWatch.current,
     onPhase: (p, detail) => {
       phase = p;
@@ -303,11 +307,14 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     openPanel,
     onEvent: (e) => terminal.feed(e),
     onBillingError: () => {
+      if (!full) return; // the ledger is the owner's; Jarvis already said so
       watch.markExhausted();
       setBanner("exhausted", "The Anthropic account is out of credit. Top up, then set the new balance in Usage.");
       void watch.poll();
     },
-  });
+    },
+    profile,
+  );
   speaker.onChange((s) => {
     if (s === "speaking") listener.pause();
     else listener.resumeAfterSpeech(lastReplyAsked);
@@ -391,9 +398,10 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     onLocked();
   };
 
-  // ---- systems panel -------------------------------------------------------
-  const rows = $<HTMLUListElement>("#systems-rows");
+  // ---- systems panel (the owner's) ------------------------------------------
   const renderSystems = async () => {
+    const rows = root.querySelector<HTMLUListElement>("#systems-rows");
+    if (!rows) return;
     try {
       const ops = compactOps(await get<Record<string, unknown>>("ops"));
       rows.replaceChildren(
@@ -417,8 +425,10 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       rows.innerHTML = `<li class="panel-empty">Operations feed unavailable</li>`;
     }
   };
-  void renderSystems();
-  timers.push(window.setInterval(() => void renderSystems(), 60_000));
+  if (full) {
+    void renderSystems();
+    timers.push(window.setInterval(() => void renderSystems(), 60_000));
+  }
 
   // ---- credits: banner, Usage panel, spoken warnings ---------------------------
   const banner = $<HTMLDivElement>("#hud-banner");
@@ -538,10 +548,11 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   void renderRecent();
   timers.push(window.setInterval(() => void renderRecent(), 30_000));
 
-  // ---- jobs Jarvis dispatched (BlueWeb, the rig) -----------------------------
-  const jobRows = $<HTMLUListElement>("#job-rows");
+  // ---- jobs Jarvis dispatched (BlueWeb, the rig; the owner's) ---------------
+  const jobRows = root.querySelector<HTMLUListElement>("#job-rows");
   const DAY = 86_400_000;
   const renderJobs = (all: Job[]) => {
+    if (!jobRows) return;
     // Working ones, and anything that stopped in the last day.
     const jobs = all
       .filter((j) => j.status === "running" || j.status === "rescheduling" || (j.updatedAt && Date.now() - Date.parse(j.updatedAt) < DAY))
@@ -617,10 +628,12 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     return held;
   });
   lease.start();
-  watch.start();
+  if (full) {
+    watch.start();
+    jobWatch.start();
+  }
   void jarvis.resume();
-  jobWatch.start();
-  void Promise.all([greeting(), firstClaim]).then(([line, held]) => {
+  void Promise.all([greeting(profile), firstClaim]).then(([line, held]) => {
     transcript.note(line);
     lastReplyAsked = false; // the greeting never opens a follow-up
     // Only the HUD with the mic speaks it; another open window just shows it.
@@ -649,7 +662,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       speaker.onChange(null);
       jarvis.detach();
       fleetView.dispose();
-      systemsView.dispose();
+      systemsView?.dispose();
       usageView.dispose();
       watch.stop();
     },

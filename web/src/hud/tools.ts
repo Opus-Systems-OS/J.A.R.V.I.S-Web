@@ -16,9 +16,37 @@ export interface ToolDef {
   input_schema: Record<string, unknown>;
 }
 
-const TABS = ["HUD", "Fleet", "Systems", "Usage", "Terminal"];
+/** The HUD's tabs: the owner's, and everyone else's (no Systems). */
+export const TABS_FULL = ["HUD", "Fleet", "Systems", "Usage", "Terminal"];
+export const TABS_LIMITED = ["HUD", "Fleet", "Usage", "Terminal"];
+export const tabsFor = (full: boolean) => (full ? TABS_FULL : TABS_LIMITED);
 
-export const TOOLS: ToolDef[] = [
+/** The owner's alone: the services, his day, the jobs he dispatched. */
+const OWNER_ONLY = new Set(["opus_status", "fleet_jobs", "briefing"]);
+
+const openPanelTool = (tabs: string[]): ToolDef => ({
+  type: "custom",
+  name: "open_panel",
+  description:
+    `Switch the HUD the user is looking at to one of its tabs: ${tabs.join(", ")}. HUD is the orb, Fleet the agents and ` +
+    "sessions, Usage spend, Terminal the sandbox" +
+    (tabs.includes("Systems") ? ", Systems the architecture map" : "") +
+    ". Use when the user says 'show me …' or 'open …'.",
+  input_schema: {
+    type: "object",
+    properties: { name: { type: "string", enum: tabs } },
+    required: ["name"],
+    additionalProperties: false,
+  },
+});
+
+/** What a profile's session declares: everything for the owner; for anyone
+ * else, no systems, briefing or jobs (their key can't read them anyway). */
+export function toolsFor(full: boolean): ToolDef[] {
+  return [...TOOLS.filter((t) => full || !OWNER_ONLY.has(t.name)), openPanelTool(tabsFor(full))];
+}
+
+const TOOLS: ToolDef[] = [
   {
     type: "custom",
     name: "opus_status",
@@ -96,19 +124,6 @@ export const TOOLS: ToolDef[] = [
       additionalProperties: false,
     },
   },
-  {
-    type: "custom",
-    name: "open_panel",
-    description:
-      "Switch the HUD the user is looking at to one of its tabs: HUD (the orb), Fleet (agents and sessions), Systems " +
-      "(the architecture map), Usage (spend and credits), Terminal. Use when the user says 'show me …' or 'open …'.",
-    input_schema: {
-      type: "object",
-      properties: { name: { type: "string", enum: TABS } },
-      required: ["name"],
-      additionalProperties: false,
-    },
-  },
 ];
 
 type Json = Record<string, unknown>;
@@ -148,9 +163,10 @@ function compactUsage(u: Json): unknown {
 export async function runTool(
   name: string,
   input: unknown,
-  ui: { openPanel(tab: string): void; jobs(): Job[] },
+  ui: { openPanel(tab: string): void; jobs(): Job[]; full: boolean },
 ): Promise<{ content: string; is_error?: boolean }> {
   const args = (input ?? {}) as Record<string, unknown>;
+  if (!ui.full && OWNER_ONLY.has(name)) return { content: `this page has no tool named ${name}`, is_error: true };
   try {
     switch (name) {
       case "opus_status": {
@@ -202,7 +218,7 @@ export async function runTool(
         return { content: JSON.stringify(compactJobs(ui.jobs())) };
       case "open_panel": {
         const tab = String(args.name ?? "");
-        if (!TABS.includes(tab)) return { content: `unknown panel ${tab}`, is_error: true };
+        if (!tabsFor(ui.full).includes(tab)) return { content: `unknown panel ${tab}`, is_error: true };
         ui.openPanel(tab);
         return { content: `showing ${tab}` };
       }

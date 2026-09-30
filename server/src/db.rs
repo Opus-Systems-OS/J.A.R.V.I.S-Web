@@ -42,7 +42,38 @@ CREATE TABLE IF NOT EXISTS visits (
   id       INTEGER PRIMARY KEY CHECK (id = 1),
   last_at  INTEGER NOT NULL
 );
+-- One row per profile; replaces `visits` (Mr. Walker's row is carried over).
+CREATE TABLE IF NOT EXISTS profile_visits (
+  profile  TEXT PRIMARY KEY,
+  last_at  INTEGER NOT NULL
+);
 "#;
+
+/// Columns added after a table first shipped: an `ALTER` guarded by
+/// `PRAGMA table_info`, idempotent, a no-op on a fresh database. Rows from
+/// before profiles existed are Mr. Walker's.
+const ADDED: &[(&str, &str, &str)] = &[
+    ("web_sessions", "profile", "TEXT NOT NULL DEFAULT 'walker'"),
+    ("reminders", "profile", "TEXT NOT NULL DEFAULT 'walker'"),
+];
+
+fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    for (table, column, ty) in ADDED {
+        let present = conn
+            .prepare(&format!("PRAGMA table_info({table})"))?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .any(|name| name.as_deref() == Ok(column));
+        if !present {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"))?;
+        }
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO profile_visits (profile, last_at)
+         SELECT 'walker', last_at FROM visits WHERE id = 1",
+        [],
+    )?;
+    Ok(())
+}
 
 /// A reminder that is still to be spoken.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +133,7 @@ impl Db {
 
     fn init(conn: Connection) -> Result<Self> {
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         Ok(Db {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -114,29 +146,35 @@ impl Db {
 
     // ---- sessions ------------------------------------------------------------
 
-    pub fn insert_session(&self, token_sha256: &str, ttl_secs: i64, ip: &str) -> Result<()> {
+    pub fn insert_session(
+        &self,
+        token_sha256: &str,
+        ttl_secs: i64,
+        ip: &str,
+        profile: &str,
+    ) -> Result<()> {
         let now = now();
         self.with(|c| {
             // Expired rows go whenever a new one arrives; there are few.
             c.execute("DELETE FROM web_sessions WHERE expires_at <= ?1", [now])?;
             c.execute(
-                "INSERT INTO web_sessions (token_sha256, created_at, expires_at, ip)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![token_sha256, now, now + ttl_secs, ip],
+                "INSERT INTO web_sessions (token_sha256, created_at, expires_at, ip, profile)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![token_sha256, now, now + ttl_secs, ip, profile],
             )?;
             Ok(())
         })
     }
 
-    pub fn session_valid(&self, token_sha256: &str) -> Result<bool> {
+    /// The profile an unexpired session was unlocked as.
+    pub fn session_profile(&self, token_sha256: &str) -> Result<Option<String>> {
         self.with(|c| {
             c.query_row(
-                "SELECT 1 FROM web_sessions WHERE token_sha256 = ?1 AND expires_at > ?2",
+                "SELECT profile FROM web_sessions WHERE token_sha256 = ?1 AND expires_at > ?2",
                 params![token_sha256, now()],
-                |_| Ok(()),
+                |r| r.get(0),
             )
             .optional()
-            .map(|r| r.is_some())
         })
     }
 
@@ -193,7 +231,7 @@ impl Db {
 
     // ---- reminders -------------------------------------------------------------
 
-    pub fn add_reminder(&self, text: &str, due_at: i64) -> Result<i64> {
+    pub fn add_reminder(&self, profile: &str, text: &str, due_at: i64) -> Result<i64> {
         let now = now();
         self.with(|c| {
             // Spoken or cancelled more than 30 days ago: gone.
@@ -202,21 +240,22 @@ impl Db {
                 [now - 30 * 86_400],
             )?;
             c.execute(
-                "INSERT INTO reminders (text, due_at, created_at) VALUES (?1, ?2, ?3)",
-                params![text, due_at, now],
+                "INSERT INTO reminders (text, due_at, created_at, profile) VALUES (?1, ?2, ?3, ?4)",
+                params![text, due_at, now, profile],
             )?;
             Ok(c.last_insert_rowid())
         })
     }
 
-    /// Not yet spoken and not cancelled, soonest first.
-    pub fn pending_reminders(&self) -> Result<Vec<Reminder>> {
+    /// `profile`'s reminders not yet spoken and not cancelled, soonest first.
+    pub fn pending_reminders(&self, profile: &str) -> Result<Vec<Reminder>> {
         self.with(|c| {
             c.prepare(
                 "SELECT id, text, due_at, created_at FROM reminders
-                 WHERE delivered_at IS NULL AND cancelled_at IS NULL ORDER BY due_at, id",
+                 WHERE profile = ?1 AND delivered_at IS NULL AND cancelled_at IS NULL
+                 ORDER BY due_at, id",
             )?
-            .query_map([], |r| {
+            .query_map([profile], |r| {
                 Ok(Reminder {
                     id: r.get(0)?,
                     text: r.get(1)?,
@@ -228,9 +267,9 @@ impl Db {
         })
     }
 
-    /// Mark a pending reminder spoken (`delivered`) or cancelled. `false`
-    /// when there is no such pending reminder.
-    pub fn close_reminder(&self, id: i64, delivered: bool) -> Result<bool> {
+    /// Mark one of `profile`'s pending reminders spoken (`delivered`) or
+    /// cancelled. `false` when they have no such pending reminder.
+    pub fn close_reminder(&self, profile: &str, id: i64, delivered: bool) -> Result<bool> {
         let col = if delivered {
             "delivered_at"
         } else {
@@ -240,9 +279,9 @@ impl Db {
             c.execute(
                 &format!(
                     "UPDATE reminders SET {col} = ?2
-                     WHERE id = ?1 AND delivered_at IS NULL AND cancelled_at IS NULL"
+                     WHERE id = ?1 AND profile = ?3 AND delivered_at IS NULL AND cancelled_at IS NULL"
                 ),
-                params![id, now()],
+                params![id, now(), profile],
             )
             .map(|n| n == 1)
         })
@@ -250,17 +289,22 @@ impl Db {
 
     // ---- visits ----------------------------------------------------------------
 
-    /// When the HUD was last opened (unix seconds), and now is the new last.
-    pub fn visit(&self) -> Result<Option<i64>> {
+    /// When `profile` last opened the HUD (unix seconds), and now is the new
+    /// last.
+    pub fn visit(&self, profile: &str) -> Result<Option<i64>> {
         let now = now();
         self.with(|c| {
             let prev: Option<i64> = c
-                .query_row("SELECT last_at FROM visits WHERE id = 1", [], |r| r.get(0))
+                .query_row(
+                    "SELECT last_at FROM profile_visits WHERE profile = ?1",
+                    [profile],
+                    |r| r.get(0),
+                )
                 .optional()?;
             c.execute(
-                "INSERT INTO visits (id, last_at) VALUES (1, ?1)
-                 ON CONFLICT(id) DO UPDATE SET last_at = excluded.last_at",
-                [now],
+                "INSERT INTO profile_visits (profile, last_at) VALUES (?1, ?2)
+                 ON CONFLICT(profile) DO UPDATE SET last_at = excluded.last_at",
+                params![profile, now],
             )?;
             Ok(prev)
         })
@@ -320,26 +364,79 @@ mod tests {
     #[test]
     fn reminders_are_pending_until_spoken_or_cancelled() {
         let db = Db::in_memory().unwrap();
-        let later = db.add_reminder("call Josh", now() + 3600).unwrap();
-        let sooner = db.add_reminder("stand up", now() + 60).unwrap();
-        let p = db.pending_reminders().unwrap();
+        let later = db
+            .add_reminder("walker", "call Josh", now() + 3600)
+            .unwrap();
+        let sooner = db.add_reminder("walker", "stand up", now() + 60).unwrap();
+        let p = db.pending_reminders("walker").unwrap();
         assert_eq!(
             p.iter().map(|r| r.id).collect::<Vec<_>>(),
             vec![sooner, later]
         );
-        assert!(db.close_reminder(sooner, true).unwrap());
-        assert!(!db.close_reminder(sooner, false).unwrap(), "already spoken");
-        assert!(db.close_reminder(later, false).unwrap());
-        assert!(db.pending_reminders().unwrap().is_empty());
-        assert!(!db.close_reminder(999, true).unwrap());
+        assert!(db.close_reminder("walker", sooner, true).unwrap());
+        assert!(
+            !db.close_reminder("walker", sooner, false).unwrap(),
+            "already spoken"
+        );
+        assert!(db.close_reminder("walker", later, false).unwrap());
+        assert!(db.pending_reminders("walker").unwrap().is_empty());
+        assert!(!db.close_reminder("walker", 999, true).unwrap());
     }
 
     #[test]
-    fn a_visit_returns_the_previous_one() {
+    fn reminders_belong_to_their_profile() {
         let db = Db::in_memory().unwrap();
-        assert_eq!(db.visit().unwrap(), None);
-        let first = db.visit().unwrap().unwrap();
+        let mine = db.add_reminder("walker", "mine", now() + 60).unwrap();
+        let his = db.add_reminder("powers", "his", now() + 60).unwrap();
+        let texts = |p: &str| {
+            db.pending_reminders(p)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.text)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(texts("walker"), ["mine"]);
+        assert_eq!(texts("powers"), ["his"]);
+        assert!(
+            !db.close_reminder("powers", mine, true).unwrap(),
+            "nobody closes someone else's"
+        );
+        assert!(db.close_reminder("powers", his, true).unwrap());
+        assert_eq!(texts("walker"), ["mine"]);
+    }
+
+    #[test]
+    fn a_visit_returns_the_previous_one_per_profile() {
+        let db = Db::in_memory().unwrap();
+        assert_eq!(db.visit("walker").unwrap(), None);
+        let first = db.visit("walker").unwrap().unwrap();
         assert!((now() - first).abs() < 5);
+        assert_eq!(db.visit("powers").unwrap(), None, "his own first visit");
+    }
+
+    #[test]
+    fn a_database_from_before_profiles_is_mr_walkers() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE web_sessions (token_sha256 TEXT PRIMARY KEY, created_at INTEGER NOT NULL,
+               expires_at INTEGER NOT NULL, ip TEXT NOT NULL);
+             INSERT INTO web_sessions VALUES ('t', 0, 9999999999, '1.2.3.4');
+             CREATE TABLE reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL,
+               due_at INTEGER NOT NULL, created_at INTEGER NOT NULL, delivered_at INTEGER,
+               cancelled_at INTEGER);
+             INSERT INTO reminders (text, due_at, created_at) VALUES ('old', 1, 0);
+             CREATE TABLE visits (id INTEGER PRIMARY KEY CHECK (id = 1), last_at INTEGER NOT NULL);
+             INSERT INTO visits VALUES (1, 1234);",
+        )
+        .unwrap();
+        let db = Db::init(conn).unwrap();
+        assert_eq!(db.session_profile("t").unwrap().as_deref(), Some("walker"));
+        assert_eq!(db.pending_reminders("walker").unwrap().len(), 1);
+        assert!(db.pending_reminders("powers").unwrap().is_empty());
+        assert_eq!(db.visit("walker").unwrap(), Some(1234));
+        // And it survives being opened again.
+        let conn = db.conn.lock().unwrap();
+        migrate(&conn).unwrap();
     }
 
     #[test]

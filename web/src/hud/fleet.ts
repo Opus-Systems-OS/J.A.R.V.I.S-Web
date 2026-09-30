@@ -55,7 +55,12 @@ export class FleetView {
   private timer: number | undefined;
   private readonly $ = <T extends HTMLElement>(sel: string) => this.root.querySelector(sel) as T;
 
-  constructor(private readonly root: HTMLElement) {
+  /** `environments`: the ones offered besides an agent's default (none for a
+   * limited profile: its agent runs where it is defined to). */
+  constructor(
+    private readonly root: HTMLElement,
+    private readonly environments: readonly string[] = ENVIRONMENTS,
+  ) {
     root.innerHTML = `
       <div class="fleet">
         <section class="panel fleet-agents">
@@ -163,7 +168,7 @@ export class FleetView {
     this.$("#start-title").textContent = `Start ${a.slug}`;
     const env = this.$<HTMLSelectElement>("#start-env");
     env.replaceChildren(
-      ...[a.default_environment, ...ENVIRONMENTS.filter((e) => e !== a.default_environment)].map((e, i) => {
+      ...[a.default_environment, ...this.environments.filter((e) => e !== a.default_environment)].map((e, i) => {
         const o = el("option", undefined, i === 0 ? `${e} (default)` : e) as HTMLOptionElement;
         o.value = i === 0 ? "" : e;
         return o;

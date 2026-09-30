@@ -11,7 +11,7 @@ use axum::routing::{any, get};
 use axum::Router;
 use futures_util::StreamExt;
 use http_body_util::BodyExt;
-use jarvis_web::config::Config;
+use jarvis_web::config::{Config, Profile};
 use jarvis_web::{app, auth, db::Db, AppState};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -21,9 +21,18 @@ use tower::ServiceExt;
 const PASSWORD: &str = "correct horse battery staple";
 const WEB_KEY: &str = "osk_webtest0_secret";
 
+const POWERS_PASSWORD: &str = "a different long passphrase";
+const POWERS_KEY: &str = "osk_powers00_secret";
+
 fn password_hash() -> String {
     static HASH: OnceLock<String> = OnceLock::new();
     HASH.get_or_init(|| auth::hash_password(PASSWORD).unwrap())
+        .clone()
+}
+
+fn powers_hash() -> String {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| auth::hash_password(POWERS_PASSWORD).unwrap())
         .clone()
 }
 
@@ -185,8 +194,22 @@ async fn harness() -> Harness {
         port: 0,
         database_path: "unused".into(),
         api_url,
-        api_key: WEB_KEY.to_owned(),
-        password_hash: password_hash(),
+        profiles: vec![
+            Profile {
+                id: "walker".into(),
+                name: "Mr. Walker".into(),
+                password_hash: password_hash(),
+                api_key: WEB_KEY.to_owned(),
+                full: true,
+            },
+            Profile {
+                id: "powers".into(),
+                name: "Mr. Powers".into(),
+                password_hash: powers_hash(),
+                api_key: POWERS_KEY.to_owned(),
+                full: false,
+            },
+        ],
         static_dir: Some(dir.0.clone()),
         session_hours: 12,
     };
@@ -775,4 +798,168 @@ async fn reminders_and_visits_end_to_end() {
         h.seen.lock().unwrap().is_empty(),
         "nothing here reaches the API"
     );
+}
+
+// ---- profiles -----------------------------------------------------------------
+
+fn profile_login(profile: &str, password: &str, ip: &str) -> Request<Body> {
+    Request::builder()
+        .method(Method::POST)
+        .uri("/auth/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-jarvis", "1")
+        .header("x-forwarded-for", ip)
+        .body(Body::from(
+            json!({ "profile": profile, "password": password }).to_string(),
+        ))
+        .unwrap()
+}
+
+async fn unlock_as(h: &Harness, profile: &str, password: &str) -> String {
+    let r = send(h, profile_login(profile, password, "203.0.113.20")).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{profile}");
+    let set = r.headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    set.split(';').next().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn the_lock_screen_lists_the_profiles_and_nothing_else() {
+    let h = harness().await;
+    let r = send(&h, bff(Method::GET, "/auth/profiles", None, None)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        r.json(),
+        json!([{"id": "walker", "name": "Mr. Walker"}, {"id": "powers", "name": "Mr. Powers"}])
+    );
+}
+
+#[tokio::test]
+async fn each_profile_unlocks_only_with_its_own_password() {
+    let h = harness().await;
+    for (profile, password) in [
+        ("powers", PASSWORD),
+        ("walker", POWERS_PASSWORD),
+        ("stark", PASSWORD),
+    ] {
+        let r = send(&h, profile_login(profile, password, "198.51.100.30")).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{profile}");
+        assert_envelope(&r.json(), "unauthorized");
+    }
+    let walker = unlock_as(&h, "walker", PASSWORD).await;
+    let powers = unlock_as(&h, "powers", POWERS_PASSWORD).await;
+    let r = send(&h, bff(Method::GET, "/web/me", Some(&walker), None)).await;
+    assert_eq!(
+        r.json(),
+        json!({"id": "walker", "name": "Mr. Walker", "full": true, "agent": "jarvis"})
+    );
+    let r = send(&h, bff(Method::GET, "/web/me", Some(&powers), None)).await;
+    assert_eq!(
+        r.json(),
+        json!({"id": "powers", "name": "Mr. Powers", "full": false, "agent": "jarvis-powers"})
+    );
+    // A page from before profiles (no `profile`) still unlocks Mr. Walker.
+    let old = unlock(&h).await;
+    let r = send(&h, bff(Method::GET, "/web/me", Some(&old), None)).await;
+    assert_eq!(r.json()["id"], "walker");
+}
+
+#[tokio::test]
+async fn mr_powers_goes_upstream_with_his_own_key_and_only_to_his_areas() {
+    let h = harness().await;
+    let powers = unlock_as(&h, "powers", POWERS_PASSWORD).await;
+    let r = send(
+        &h,
+        bff(Method::GET, "/bff/v1/sessions", Some(&powers), None),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    {
+        let seen = h.seen.lock().unwrap();
+        let (_, path, auth, _) = seen.last().unwrap();
+        assert_eq!(path, "/v1/sessions");
+        assert_eq!(auth, &format!("Bearer {POWERS_KEY}"));
+    }
+    let before = h.seen.lock().unwrap().len();
+    for path in [
+        "/bff/v1/ops",
+        "/bff/v1/sources",
+        "/bff/v1/briefing",
+        "/bff/v1/clients",
+        "/bff/v1/rig",
+        "/bff/v1/voice/credit",
+    ] {
+        let r = send(&h, bff(Method::GET, path, Some(&powers), None)).await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{path}");
+        assert_envelope(&r.json(), "not_found");
+    }
+    assert_eq!(
+        h.seen.lock().unwrap().len(),
+        before,
+        "none of it left the box"
+    );
+    let r = send(&h, bff(Method::GET, "/web/credits", Some(&powers), None)).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert_envelope(&r.json(), "forbidden");
+
+    // Mr. Walker's session still uses his key and reaches everything.
+    let walker = unlock_as(&h, "walker", PASSWORD).await;
+    let r = send(&h, bff(Method::GET, "/bff/v1/ops", Some(&walker), None)).await;
+    assert_ne!(r.status, StatusCode::NOT_FOUND);
+    let seen = h.seen.lock().unwrap();
+    assert_eq!(seen.last().unwrap().2, format!("Bearer {WEB_KEY}"));
+}
+
+#[tokio::test]
+async fn reminders_visits_and_the_mic_are_per_profile() {
+    let h = harness().await;
+    let walker = unlock_as(&h, "walker", PASSWORD).await;
+    let powers = unlock_as(&h, "powers", POWERS_PASSWORD).await;
+    let at = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    let at = at
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/reminders",
+            Some(&walker),
+            Some(json!({"text": "mine", "at": at})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.json());
+    let mine = r.json()["id"].as_i64().unwrap();
+
+    let r = send(&h, bff(Method::GET, "/web/reminders", Some(&powers), None)).await;
+    assert_eq!(r.json()["reminders"], json!([]));
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            &format!("/web/reminders/{mine}/cancel"),
+            Some(&powers),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "not his to cancel");
+
+    let r = send(&h, bff(Method::POST, "/web/visit", Some(&walker), None)).await;
+    assert_eq!(r.json()["previous"], Value::Null);
+    let r = send(&h, bff(Method::POST, "/web/visit", Some(&powers), None)).await;
+    assert_eq!(r.json()["previous"], Value::Null, "his first visit");
+
+    let mic = |cookie: &str, client: &str| {
+        bff(
+            Method::POST,
+            "/web/mic",
+            Some(cookie),
+            Some(json!({"client": client})),
+        )
+    };
+    let r = send(&h, mic(&walker, "walker-tab-1")).await;
+    assert_eq!(r.json()["held"], true);
+    let r = send(&h, mic(&powers, "powers-tab-1")).await;
+    assert_eq!(r.json()["held"], true, "his own microphone");
 }

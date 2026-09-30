@@ -5,7 +5,13 @@
 //! Only an allowlist of API areas is reachable, and key management and
 //! pairing never are — whatever scopes the `web` key happens to hold. Bodies
 //! stream both ways, so the session SSE feed passes through as it arrives.
+//!
+//! Each profile calls upstream with its own key. Mr. Powers's is limited to
+//! his own agent by the API itself; here he also gets a narrower set of
+//! areas (no ops, sources, briefing, clients, rig or credit), so a panel
+//! he doesn't have is a 404 before anything leaves this box.
 
+use crate::config::Profile;
 use crate::error::{Error, Result};
 use crate::request_id::{RequestId, HEADER as REQUEST_ID};
 use crate::AppState;
@@ -21,6 +27,10 @@ const ALLOWED_AREAS: &[&str] = &[
     "me", "fleet", "rig", "sessions", "usage", "voice", "ops", "sources", "briefing", "clients",
     "files",
 ];
+/// A profile that isn't the owner's reaches only these.
+const LIMITED_AREAS: &[&str] = &["me", "sessions", "files", "fleet", "usage", "voice"];
+/// …and never these (the Fish balance is the owner's ledger).
+const LIMITED_DENIED: &[&str] = &["/v1/voice/credit"];
 /// Never reachable, at any depth.
 const FORBIDDEN_SEGMENTS: &[&str] = &["keys", "pair"];
 /// Request bodies are small JSON (events, tool results, text to speak)…
@@ -72,13 +82,28 @@ pub fn allowed_path(rest: &str) -> Option<String> {
     Some(format!("/v1/{}", segments.join("/")))
 }
 
+/// Whether `profile` may reach the API path `path` (already allowlisted).
+pub fn profile_allows(profile: &Profile, path: &str) -> bool {
+    if profile.full {
+        return true;
+    }
+    let area = path
+        .strip_prefix("/v1/")
+        .and_then(|p| p.split('/').next())
+        .unwrap_or("");
+    LIMITED_AREAS.contains(&area) && !LIMITED_DENIED.contains(&path)
+}
+
 pub async fn proxy(
     State(state): State<AppState>,
+    Extension(profile): Extension<Profile>,
     Extension(RequestId(request_id)): Extension<RequestId>,
     Path(rest): Path<String>,
     req: Request,
 ) -> Result<Response> {
-    let path = allowed_path(&rest).ok_or(Error::NotFound)?;
+    let path = allowed_path(&rest)
+        .filter(|p| profile_allows(&profile, p))
+        .ok_or(Error::NotFound)?;
     let (parts, body) = req.into_parts();
     let mut url = format!("{}{}", state.config.api_url, path);
     if let Some(q) = parts.uri.query() {
@@ -93,7 +118,7 @@ pub async fn proxy(
     let mut out = state
         .http
         .request(parts.method.clone(), &url)
-        .bearer_auth(&state.config.api_key)
+        .bearer_auth(&profile.api_key)
         .header(REQUEST_ID, &request_id);
     for name in FORWARD_REQUEST {
         if let Some(v) = parts.headers.get(name) {
@@ -131,6 +156,41 @@ pub async fn proxy(
 #[cfg(test)]
 mod tests {
     use super::allowed_path;
+
+    #[test]
+    fn a_limited_profile_reaches_only_its_areas() {
+        let p = |full| crate::config::Profile {
+            id: "x".into(),
+            name: "X".into(),
+            password_hash: String::new(),
+            api_key: String::new(),
+            full,
+        };
+        let (owner, limited) = (p(true), p(false));
+        for path in [
+            "/v1/me",
+            "/v1/sessions",
+            "/v1/sessions/sesn_1/stream",
+            "/v1/files/file_1/content",
+            "/v1/fleet/agents",
+            "/v1/usage",
+            "/v1/voice/speak",
+            "/v1/voice/transcribe",
+        ] {
+            assert!(super::profile_allows(&limited, path), "{path}");
+        }
+        for path in [
+            "/v1/ops",
+            "/v1/sources",
+            "/v1/briefing",
+            "/v1/clients",
+            "/v1/rig",
+            "/v1/voice/credit",
+        ] {
+            assert!(!super::profile_allows(&limited, path), "{path}");
+            assert!(super::profile_allows(&owner, path), "{path}");
+        }
+    }
 
     #[test]
     fn allowlist() {

@@ -57,6 +57,7 @@ describe("greeting", () => {
     expect(salutation(new Date("2026-09-23T21:00:00Z"))).toBe("Good afternoon, Mr. Walker"); // 14:00 PDT
     expect(salutation(new Date("2026-09-24T03:00:00Z"))).toBe("Good evening, Mr. Walker"); // 20:00 PDT
     expect(salutation(new Date("2026-09-24T09:00:00Z"))).toBe("Burning the midnight oil, Mr. Walker"); // 02:00 PDT
+    expect(salutation(new Date("2026-09-24T03:00:00Z"), "Mr. Powers")).toBe("Good evening, Mr. Powers");
   });
 
   it("summarises the systems", () => {

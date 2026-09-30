@@ -53,8 +53,27 @@ async function request(method: string, path: string, body?: unknown): Promise<Re
   return res;
 }
 
-export async function unlock(password: string): Promise<void> {
-  await request("POST", "/auth/login", { password });
+/** Someone who can unlock the HUD, as the lock screen lists them. */
+export interface ProfileChoice {
+  id: string;
+  name: string;
+}
+
+/** The unlocked session's profile (`/web/me`). */
+export interface Profile extends ProfileChoice {
+  /** The owner's profile: every panel. Otherwise the least-privilege set. */
+  full: boolean;
+  /** The fleet agent this profile's conversation runs on. */
+  agent: string;
+}
+
+export async function profiles(): Promise<ProfileChoice[]> {
+  const res = await request("GET", "/auth/profiles");
+  return (await res.json()) as ProfileChoice[];
+}
+
+export async function unlock(profile: string, password: string): Promise<void> {
+  await request("POST", "/auth/login", { profile, password });
 }
 
 export async function lock(): Promise<void> {

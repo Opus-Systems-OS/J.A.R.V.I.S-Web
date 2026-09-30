@@ -7,26 +7,43 @@
 // State in the browser is only a bookmark (session id + chosen model), as
 // the Tauri app keeps one. The conversation itself is Anthropic's.
 
-import { ApiError, get, post } from "../api";
+import { ApiError, get, post, type Profile } from "../api";
 import type { Job } from "./jobs";
-import { TOOLS, runTool } from "./tools";
+import { runTool, toolsFor } from "./tools";
 import type { OutputFile, Rendered, SessionEvent, Transcript } from "./transcript";
 
-const SESSION_KEY = "jarvis.session";
-const MODEL_KEY = "jarvis.model";
+/** Where this browser keeps a profile's bookmark. Mr. Walker's keys are the
+ * ones from before profiles, so his conversation carries on. */
+const storageKey = (profile: Profile, what: "session" | "model") =>
+  profile.full ? `jarvis.${what}` : `jarvis.${profile.id}.${what}`;
 
-/** The web client's personality and context, appended to jarvis's prompt. */
-const SYSTEM_SUFFIX = [
-  "This session is the J.A.R.V.I.S. web HUD at jarvis.opustower.dev.",
-  "The user is Mr. Walker (James), in Calabasas, California; use America/Los_Angeles for times and dates.",
-  "Address him as Mr. Walker or sir, in the manner of the J.A.R.V.I.S. from the films: dry, courteous, quietly witty, never servile.",
-  "Every reply is spoken aloud by a text-to-speech voice as soon as you send it, so: one to three short sentences unless he asks for detail,",
-  "no markdown, no bullet points, no code unless he asks to see it, spell out symbols, and round numbers.",
-  "Send one message per turn: say briefly what you are about to do only if it will take more than a few seconds.",
-  "Use opus_status for anything about the state of his systems and fleet_usage for spend, rather than guessing.",
-  "Use fleet_jobs to find the jobs you dispatched; the HUD announces when one finishes or has a question.",
-  "Use briefing for his day (weather, calendar, email, YouTube, WHOOP, Buffer) and set_reminder when he asks to be reminded.",
-].join(" ");
+/** The web client's personality and context, appended to the agent's prompt. */
+export function systemSuffix(profile: Profile): string {
+  const shared = [
+    "This session is the J.A.R.V.I.S. web HUD at jarvis.opustower.dev.",
+    "Every reply is spoken aloud by a text-to-speech voice as soon as you send it, so: one to three short sentences unless he asks for detail,",
+    "no markdown, no bullet points, no code unless he asks to see it, spell out symbols, and round numbers.",
+    "Send one message per turn: say briefly what you are about to do only if it will take more than a few seconds.",
+  ];
+  if (profile.full) {
+    return [
+      shared[0],
+      "The user is Mr. Walker (James), in Calabasas, California; use America/Los_Angeles for times and dates.",
+      "Address him as Mr. Walker or sir, in the manner of the J.A.R.V.I.S. from the films: dry, courteous, quietly witty, never servile.",
+      ...shared.slice(1),
+      "Use opus_status for anything about the state of his systems and fleet_usage for spend, rather than guessing.",
+      "Use fleet_jobs to find the jobs you dispatched; the HUD announces when one finishes or has a question.",
+      "Use briefing for his day (weather, calendar, email, YouTube, WHOOP, Buffer) and set_reminder when he asks to be reminded.",
+    ].join(" ");
+  }
+  return [
+    shared[0],
+    `The user is ${profile.name}, in Calabasas, California; use America/Los_Angeles for times and dates.`,
+    `Address him as ${profile.name} or sir, in the manner of the J.A.R.V.I.S. from the films: dry, courteous, quietly witty, never servile.`,
+    ...shared.slice(1),
+    "Use fleet_usage for what his sessions have cost, rather than guessing, and set_reminder when he asks to be reminded.",
+  ].join(" ");
+}
 
 export const MODELS: { id: string; label: string }[] = [
   { id: "", label: "Opus 5 · agent default" },
@@ -69,8 +86,8 @@ function save(key: string, value: string | null) {
 }
 
 export class Jarvis {
-  private sessionId: string | null = load(SESSION_KEY);
-  private modelId: string = load(MODEL_KEY) ?? "";
+  private sessionId: string | null;
+  private modelId: string;
   private stream: EventSource | null = null;
   /** Replies that existed before this page started listening: never spoken. */
   private readonly silent = new Set<string>();
@@ -82,7 +99,11 @@ export class Jarvis {
   constructor(
     private readonly transcript: Transcript,
     private readonly ev: JarvisEvents,
-  ) {}
+    private readonly profile: Profile,
+  ) {
+    this.sessionId = load(storageKey(profile, "session"));
+    this.modelId = load(storageKey(profile, "model")) ?? "";
+  }
 
   get model(): string {
     return this.modelId;
@@ -108,7 +129,7 @@ export class Jarvis {
   setModel(id: string) {
     if (id === this.modelId) return;
     this.modelId = id;
-    save(MODEL_KEY, id || null);
+    save(storageKey(this.profile, "model"), id || null);
     const label = MODELS.find((m) => m.id === id)?.label ?? id;
     this.forget();
     this.transcript.divider(`new conversation · ${label}`);
@@ -144,16 +165,16 @@ export class Jarvis {
         }
       }
       const created = await post<{ session_id: string }>("sessions", {
-        agent_slug: "jarvis",
+        agent_slug: this.profile.agent,
         task,
         client: "web",
-        system_suffix: SYSTEM_SUFFIX,
-        tools: TOOLS,
+        system_suffix: systemSuffix(this.profile),
+        tools: toolsFor(this.profile.full),
         ...files,
         ...(this.modelId ? { model: this.modelId } : {}),
       });
       this.sessionId = created.session_id;
-      save(SESSION_KEY, this.sessionId);
+      save(storageKey(this.profile, "session"), this.sessionId);
       await this.attach(false);
     } catch (e) {
       this.busy = false;
@@ -177,7 +198,7 @@ export class Jarvis {
     this.detach();
     this.sessionId = null;
     this.busy = false;
-    save(SESSION_KEY, null);
+    save(storageKey(this.profile, "session"), null);
   }
 
   /**
@@ -228,7 +249,7 @@ export class Jarvis {
   private async outputs(id: string, again = false) {
     const page = await get<{ data?: OutputFile[] }>(`sessions/${id}/files`).catch(() => null);
     if (this.sessionId !== id) return;
-    if (page?.data) this.transcript.outputs(page.data);
+    if (page?.data) this.transcript.outputs(page.data, id);
     if (again) window.setTimeout(() => void this.outputs(id), 4000);
   }
 
@@ -286,7 +307,11 @@ export class Jarvis {
   private async answer(toolUseId: string, name: string, input: unknown) {
     if (!toolUseId || this.answered.has(toolUseId) || !this.sessionId) return;
     this.answered.add(toolUseId);
-    const result = await runTool(name, input, { openPanel: (t) => this.ev.openPanel(t), jobs: () => this.ev.jobs() });
+    const result = await runTool(name, input, {
+      openPanel: (t) => this.ev.openPanel(t),
+      jobs: () => this.ev.jobs(),
+      full: this.profile.full,
+    });
     await post(`sessions/${this.sessionId}/tool-results`, {
       results: [{ custom_tool_use_id: toolUseId, content: result.content, ...(result.is_error ? { is_error: true } : {}) }],
     }).catch((e) => this.transcript.note(`tool result not delivered: ${String(e)}`, true));

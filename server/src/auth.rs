@@ -1,12 +1,16 @@
-//! The password gate. One password (Argon2id hash in the droplet `.env`),
-//! one kind of session: a 256-bit random token in a `__Host-` cookie
-//! (HttpOnly, Secure, SameSite=Strict), stored here only as its SHA-256.
+//! The password gate. One password per profile (Argon2id hashes in the
+//! droplet `.env`: Mr. Walker's, and Mr. Powers's when configured), one kind
+//! of session: a 256-bit random token in a `__Host-` cookie (HttpOnly,
+//! Secure, SameSite=Strict), stored here only as its SHA-256, with the
+//! profile it was unlocked as. Every request after that carries the
+//! profile's `Profile` as an extension.
 //!
 //! Brute force is bounded before any hashing happens: 5 failures per IP per
 //! 15 minutes and 30 per hour from everyone. Mutating requests must carry
 //! `x-jarvis: 1`, which a cross-site form cannot send and a cross-site
 //! `fetch` cannot send without a CORS preflight this server never answers.
 
+use crate::config::Profile;
 use crate::error::{Error, Result};
 use crate::AppState;
 use argon2::password_hash::{PasswordHash, PasswordVerifier};
@@ -15,8 +19,8 @@ use axum::extract::{Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
-use serde::Deserialize;
+use axum::{Extension, Json};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const COOKIE: &str = "__Host-jw";
@@ -31,7 +35,64 @@ const MAX_PASSWORD_BYTES: usize = 1024;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoginBody {
+    /// A profile id from `/auth/profiles`. Absent = Mr. Walker's, so a
+    /// page from before profiles still unlocks during a deploy.
+    #[serde(default = "owner_id")]
+    pub profile: String,
     pub password: String,
+}
+
+fn owner_id() -> String {
+    "walker".to_owned()
+}
+
+/// What the lock screen shows: who can unlock, never anything about how.
+#[derive(Debug, Serialize)]
+pub struct ProfileOut {
+    pub id: String,
+    pub name: String,
+}
+
+/// `GET /auth/profiles` (no session): the profile buttons.
+pub async fn profiles(State(state): State<AppState>) -> Json<Vec<ProfileOut>> {
+    Json(
+        state
+            .config
+            .profiles
+            .iter()
+            .map(|p| ProfileOut {
+                id: p.id.clone(),
+                name: p.name.clone(),
+            })
+            .collect(),
+    )
+}
+
+#[derive(Debug, Serialize)]
+pub struct Me {
+    pub id: String,
+    pub name: String,
+    /// The owner's profile: every panel. `false` = the least-privilege set.
+    pub full: bool,
+    /// The fleet agent this profile's conversation runs on: `jarvis` for
+    /// the owner, `jarvis-<id>` for anyone else (Iron-Fleet's
+    /// `agents/jarvis-powers.json`), which is all their key can reach.
+    pub agent: String,
+}
+
+/// `GET /web/me`: who this unlocked session is.
+pub async fn me(Extension(p): Extension<Profile>) -> Json<Me> {
+    let agent = if p.full {
+        "jarvis".to_owned()
+    } else {
+        format!("jarvis-{}", p.id)
+    };
+    Json(Me {
+        id: p.id,
+        name: p.name,
+        full: p.full,
+        agent,
+    })
 }
 
 fn sha256_hex(s: &str) -> String {
@@ -103,21 +164,27 @@ pub async fn login(
 ) -> Result<Response> {
     let ip = client_ip(&headers);
     check_limits(&state, &ip)?;
-    if body.password.is_empty() || body.password.len() > MAX_PASSWORD_BYTES {
+    // An unknown profile fails exactly like a wrong password.
+    let profile = state.config.profile(&body.profile).cloned();
+    let Some(profile) =
+        profile.filter(|_| !body.password.is_empty() && body.password.len() <= MAX_PASSWORD_BYTES)
+    else {
         state.db.record_failure(&ip)?;
         return Err(Error::Unauthorized);
-    }
-    if !verify(state.config.password_hash.clone(), body.password).await? {
+    };
+    if !verify(profile.password_hash.clone(), body.password).await? {
         state.db.record_failure(&ip)?;
-        tracing::warn!(%ip, "unlock failed");
+        tracing::warn!(%ip, profile = %profile.id, "unlock failed");
         return Err(Error::Unauthorized);
     }
     state.db.clear_failures(&ip)?;
 
     let token = crate::hex(&crate::random_bytes::<32>());
     let ttl = i64::from(state.config.session_hours) * 3600;
-    state.db.insert_session(&sha256_hex(&token), ttl, &ip)?;
-    tracing::info!(%ip, "unlocked");
+    state
+        .db
+        .insert_session(&sha256_hex(&token), ttl, &ip, &profile.id)?;
+    tracing::info!(%ip, profile = %profile.id, "unlocked");
 
     let cookie =
         format!("{COOKIE}={token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={ttl}");
@@ -143,17 +210,30 @@ pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result
     Ok(res)
 }
 
-/// Middleware: an unlocked session is required.
+/// Middleware: an unlocked session is required; its profile rides along.
+/// A session whose profile is no longer configured is locked out.
 pub async fn require_session(
     State(state): State<AppState>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Result<Response> {
     let token = cookie_token(req.headers()).ok_or(Error::Unauthorized)?;
-    if !state.db.session_valid(&sha256_hex(&token))? {
-        return Err(Error::Unauthorized);
-    }
+    let profile = state
+        .db
+        .session_profile(&sha256_hex(&token))?
+        .and_then(|id| state.config.profile(&id).cloned())
+        .ok_or(Error::Unauthorized)?;
+    req.extensions_mut().insert(profile);
     Ok(next.run(req).await)
+}
+
+/// The owner's profile only (the credit ledger).
+pub fn require_full(profile: &Profile) -> Result<()> {
+    if profile.full {
+        Ok(())
+    } else {
+        Err(Error::Forbidden("not on this profile"))
+    }
 }
 
 /// Middleware: anything that changes state must say `x-jarvis: 1`.

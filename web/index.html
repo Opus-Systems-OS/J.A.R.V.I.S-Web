@@ -26,7 +26,15 @@
       </div>
       <h1 class="wordmark">J.A.R.V.I.S.</h1>
       <p class="tagline">Just A Rather Very Intelligent System</p>
-      <form id="lock-form" class="lock-form" autocomplete="off">
+      <section id="lock-profiles" class="lock-profiles" aria-label="Who is it?" hidden>
+        <p class="frame-label">Identify</p>
+        <div class="profile-list" id="lock-profile-list"></div>
+      </section>
+      <form id="lock-form" class="lock-form" autocomplete="off" hidden>
+        <div class="lock-who" id="lock-who-row" hidden>
+          <span class="lock-who-name" id="lock-who"></span>
+          <button type="button" class="btn-ghost" id="lock-back">Not you?</button>
+        </div>
         <label class="frame" for="lock-password">
           <span class="frame-label">Voice print unavailable — passphrase required</span>
           <input
