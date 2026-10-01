@@ -56,6 +56,10 @@ const CLIENT_LABELS: Record<string, string> = {
   "jarvis-mac": "Jarvis (old key)",
 };
 
+/** Tailnet device names. Two machines run Windows, so match by name. */
+const RIG_DEVICE = "opus";
+const POWERS_PC_DEVICE = "DESKTOP-5OAUHHA";
+
 const FIXED: NodeDef[] = [
   { id: "caddy", label: "Caddy · TLS", x: 330, y: 250 },
   { id: "jarvis-web", label: "jarvis-web", x: 470, y: 95 },
@@ -65,6 +69,7 @@ const FIXED: NodeDef[] = [
   { id: "anthropic", label: "Managed Agents", x: 760, y: 250, w: 150 },
   { id: "sandbox", label: "Cloud sandboxes", x: 910, y: 140 },
   { id: "rig", label: "Rig · RTX 5070", x: 910, y: 360 },
+  { id: "powers-pc", label: "Mr. Powers · PC", x: 910, y: 455 },
   { id: "github", label: "GitHub", x: 330, y: 520 },
   { id: "cloudflare", label: "Cloudflare", x: 480, y: 520 },
   { id: "uptimerobot", label: "UptimeRobot", x: 630, y: 520 },
@@ -189,7 +194,7 @@ export class SystemsView {
 
     // The rig: on the tailnet, and whether Ollama answers.
     const devices = val(tailscale)?.detail?.devices ?? [];
-    const opus = devices.find((d) => d.os === "windows") ?? devices.find((d) => d.name === "opus");
+    const opus = devices.find((d) => d.name === RIG_DEVICE);
     const rigInfo = val(rig);
     const rigState: State = opus?.online ? (rigInfo?.online ? "ok" : "warn") : "down";
     this.live.set("rig", {
@@ -200,6 +205,14 @@ export class SystemsView {
         ollama: rigInfo?.online ? (rigInfo.models ?? []).map((m) => m.name).join(", ") : rigInfo?.reason ?? "unreachable",
         "rig-gpu sessions": running.filter((s) => s.metadata?.iron_fleet_environment === "rig-gpu").length,
       },
+    });
+
+    // Mr. Powers's PC (AR1P-D): on the tailnet, nothing of ours runs on it yet.
+    const powers = devices.find((d) => d.name === POWERS_PC_DEVICE);
+    this.live.set("powers-pc", {
+      state: powers ? (powers.online ? "ok" : "down") : "unknown",
+      sub: powers ? (powers.online ? "on tailnet" : `offline · seen ${ago(powers.last_seen)}`) : "not on the tailnet",
+      detail: powers ? { owner: "AR1P-D", tailnet: `${powers.name} (${powers.online ? "online" : "offline"}, seen ${ago(powers.last_seen)})` } : {},
     });
 
     // Clients, from key last-use.
@@ -269,7 +282,7 @@ export class SystemsView {
       <text class="zone-label" x="262" y="60">DROPLET · opustower.dev</text>
       <text class="zone-label" x="30" y="30">CLIENTS</text>
       <text class="zone-label" x="690" y="30">ANTHROPIC</text>
-      <text class="zone-label" x="850" y="440">TAILNET</text>
+      <text class="zone-label" x="850" y="505">TAILNET</text>
       ${edges.join("")}
       ${nodes.join("")}`;
     svg.querySelectorAll<SVGGElement>(".node").forEach((g) => {
