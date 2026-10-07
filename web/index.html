@@ -46,6 +46,12 @@
             required
           />
         </label>
+        <!-- A honeypot: off-screen, out of the tab order, hidden from screen
+             readers. People never fill it; a bot that does is banned. -->
+        <div class="lock-hp" aria-hidden="true">
+          <label for="lock-fax">Fax number</label>
+          <input id="lock-fax" name="fax_number" type="text" tabindex="-1" autocomplete="off" />
+        </div>
         <button id="lock-submit" type="submit" class="btn-primary">Authenticate</button>
         <p id="lock-status" class="lock-status" role="status" aria-live="polite"></p>
       </form>

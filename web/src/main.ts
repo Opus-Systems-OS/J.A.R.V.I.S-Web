@@ -23,7 +23,7 @@ function toLock() {
   hud?.unmount();
   hud = null;
   hudRoot.hidden = true;
-  hudRoot.innerHTML = "";
+  hudRoot.replaceChildren();
   showLock(toHud, () => speaker.prime());
 }
 

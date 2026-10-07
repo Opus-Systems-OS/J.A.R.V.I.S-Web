@@ -19,6 +19,7 @@ use crate::AppState;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::{Extension, Json};
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
@@ -172,7 +173,7 @@ async fn api_get(
     let res = state
         .http
         .get(format!("{}{}", state.config.api_url, path_and_query))
-        .bearer_auth(&state.config.owner().api_key)
+        .bearer_auth(state.config.owner().api_key.expose_secret())
         .header(REQUEST_ID, request_id)
         .timeout(UPSTREAM_TIMEOUT)
         .send()

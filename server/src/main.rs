@@ -1,9 +1,11 @@
 //! `jarvis-web`: `serve` (default) runs the site; `hash-password` prints the
 //! Argon2id hash for `JARVIS_WEB_PASSWORD_HASH` — the password itself is read
-//! from the terminal and never stored anywhere.
+//! from the terminal and never stored anywhere. `bans` and `unban <ip>` read
+//! and lift the honeypot's bans, for when the HUD itself is out of reach:
+//! `docker compose exec jarvis-web jarvis-web unban 203.0.113.9`.
 
 use clap::{Parser, Subcommand};
-use jarvis_web::config::Config;
+use jarvis_web::config::{self, Config};
 use jarvis_web::{auth, db, error, AppState};
 use tracing_subscriber::EnvFilter;
 
@@ -20,6 +22,10 @@ enum Command {
     Serve,
     /// Read the unlock password from the terminal and print its hash.
     HashPassword,
+    /// List the addresses the honeypot banned.
+    Bans,
+    /// Lift the ban on an address.
+    Unban { ip: String },
 }
 
 #[tokio::main]
@@ -40,9 +46,23 @@ async fn main() {
 
 async fn run() -> error::Result<()> {
     let cli = Cli::parse();
-    if let Some(Command::HashPassword) = cli.command {
-        println!("{}", auth::hash_password_interactive()?);
-        return Ok(());
+    match cli.command {
+        Some(Command::HashPassword) => {
+            println!("{}", auth::hash_password_interactive()?);
+            return Ok(());
+        }
+        Some(Command::Bans) => {
+            for b in db::Db::open(&config::database_path())?.bans()? {
+                println!("{}\t{}\t{}\t{}", b.ip, b.at, b.reason, b.path);
+            }
+            return Ok(());
+        }
+        Some(Command::Unban { ip }) => {
+            let lifted = db::Db::open(&config::database_path())?.unban(&ip)?;
+            println!("{}", if lifted { "unbanned" } else { "not banned" });
+            return Ok(());
+        }
+        Some(Command::Serve) | None => {}
     }
 
     let cfg = Config::from_env()?;

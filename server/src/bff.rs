@@ -10,6 +10,13 @@
 //! his own agent by the API itself; here he also gets a narrower set of
 //! areas (no ops, sources, briefing, clients, rig or credit), so a panel
 //! he doesn't have is a 404 before anything leaves this box.
+//!
+//! An agent's output file is served from this origin, so it always goes out
+//! as an attachment under a sandboxing CSP: an `.html` or `.svg` an agent
+//! wrote (perhaps steered by a page it read) can never run as this site.
+//!
+//! `/bff/v1/keys` and `/bff/v1/pair` themselves are honeypot traps
+//! (`honey.rs`); deeper uses of those segments are a plain 404 here.
 
 use crate::config::Profile;
 use crate::error::{Error, Result};
@@ -17,10 +24,11 @@ use crate::request_id::{RequestId, HEADER as REQUEST_ID};
 use crate::AppState;
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
-use axum::http::{header, HeaderName};
+use axum::http::{header, HeaderName, HeaderValue};
 use axum::response::Response;
 use axum::Extension;
 use futures_util::TryStreamExt;
+use secrecy::ExposeSecret;
 
 /// First path segment → reachable. Everything else is a 404 here.
 const ALLOWED_AREAS: &[&str] = &[
@@ -55,6 +63,32 @@ const FORWARD_RESPONSE: &[HeaderName] = &[
     header::CACHE_CONTROL,
     header::RETRY_AFTER,
 ];
+
+/// What an agent's output file is served under, whatever the API said.
+const DOWNLOAD_CSP: &str = "sandbox; default-src 'none'";
+
+/// `GET /v1/files/{id}/content`: a file's bytes.
+fn is_file_content(api_path: &str) -> bool {
+    api_path
+        .strip_prefix("/v1/files/")
+        .and_then(|p| p.strip_suffix("/content"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// `attachment`, keeping the upstream parameters (the filename) — never
+/// `inline`, never absent.
+pub fn force_attachment(upstream: Option<&HeaderValue>) -> HeaderValue {
+    let params = upstream
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split_once(';'))
+        .map(|(_, rest)| rest.trim())
+        .unwrap_or("");
+    if params.is_empty() {
+        return HeaderValue::from_static("attachment");
+    }
+    HeaderValue::from_str(&format!("attachment; {params}"))
+        .unwrap_or(HeaderValue::from_static("attachment"))
+}
 
 fn segment_ok(s: &str) -> bool {
     !s.is_empty()
@@ -118,7 +152,7 @@ pub async fn proxy(
     let mut out = state
         .http
         .request(parts.method.clone(), &url)
-        .bearer_auth(&profile.api_key)
+        .bearer_auth(profile.api_key.expose_secret())
         .header(REQUEST_ID, &request_id);
     for name in FORWARD_REQUEST {
         if let Some(v) = parts.headers.get(name) {
@@ -133,11 +167,23 @@ pub async fn proxy(
     }
 
     let upstream = out.send().await?;
+    let download = is_file_content(&path) && upstream.status().is_success();
     let mut res = Response::builder().status(upstream.status().as_u16());
     for name in FORWARD_RESPONSE {
+        if download && name == header::CONTENT_DISPOSITION {
+            continue;
+        }
         if let Some(v) = upstream.headers().get(name) {
             res = res.header(name, v);
         }
+    }
+    if download {
+        res = res
+            .header(
+                header::CONTENT_DISPOSITION,
+                force_attachment(upstream.headers().get(header::CONTENT_DISPOSITION)),
+            )
+            .header(header::CONTENT_SECURITY_POLICY, DOWNLOAD_CSP);
     }
     // Event streams must not be buffered by Caddy or anything else.
     let is_sse = upstream
@@ -163,7 +209,7 @@ mod tests {
             id: "x".into(),
             name: "X".into(),
             password_hash: String::new(),
-            api_key: String::new(),
+            api_key: String::new().into(),
             full,
         };
         let (owner, limited) = (p(true), p(false));
@@ -190,6 +236,26 @@ mod tests {
             assert!(!super::profile_allows(&limited, path), "{path}");
             assert!(super::profile_allows(&owner, path), "{path}");
         }
+    }
+
+    #[test]
+    fn downloads_are_always_attachments() {
+        use super::{force_attachment, is_file_content};
+        use axum::http::HeaderValue;
+        assert!(is_file_content("/v1/files/file_1/content"));
+        assert!(!is_file_content("/v1/files"));
+        assert!(!is_file_content("/v1/files//content"));
+        let v = |s: &'static str| HeaderValue::from_static(s);
+        assert_eq!(force_attachment(None), "attachment");
+        assert_eq!(force_attachment(Some(&v("inline"))), "attachment");
+        assert_eq!(
+            force_attachment(Some(&v("inline; filename=\"x.html\""))),
+            "attachment; filename=\"x.html\""
+        );
+        assert_eq!(
+            force_attachment(Some(&v("attachment; filename=\"summary.md\""))),
+            "attachment; filename=\"summary.md\""
+        );
     }
 
     #[test]

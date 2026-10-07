@@ -26,19 +26,44 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   click is also the user gesture that lets Jarvis use the mic and speaker.
 - **Brute force is bounded before hashing:** 5 failures per IP per 15 min,
   30 per hour from everyone (Argon2id, constant-time verify).
+- **Markup only through `html`.** The CSP enforces Trusted Types
+  (`require-trusted-types-for 'script'; trusted-types jarvis`): the page's
+  one policy lives in `web/src/html.ts` and only accepts what its `html`
+  template built, escaping every value. Text from the API or the agent goes
+  in with `textContent`. Never assign a string to `innerHTML`.
+- **Nothing from another site.** `/auth`, `/web` and `/bff` refuse any
+  request a browser marks `Sec-Fetch-Site: cross-site` or `same-site`, reads
+  included, on top of the cookie's SameSite=Strict and the `x-jarvis` header.
+- **An agent's file never renders here.** `/bff/v1/files/*/content` always
+  goes out as an attachment under `Content-Security-Policy: sandbox`.
+- **The honeypot bans until you lift it.** Trap paths (`/.env`, `/wp-*`,
+  `*.php`, `/admin`, `/bff/v1/keys`, …), the canary passphrase in the fake
+  `/.env`, and the lock form's hidden honey field all ban the address. A
+  browser holding a valid unlock is never banned (and gets in even from a
+  banned address); unban from **Systems → Defenses** or
+  `docker compose exec jarvis-web jarvis-web unban <ip>`.
+  Jarvis mentions any new bans in the greeting when you unlock.
+- **Sessions:** 12 h at most, and 2 h unused locks them (`SESSION_IDLE_MINUTES`).
+  **Lock all** in the top bar ends every browser unlocked as you.
 - **Nothing secret is in this repository.** It is public. The password hash
-  and the key live in the droplet's `.env`.
+  lives in the droplet's `.env`; each `osk_` key in its own 0400 Docker
+  secret file (`WEB_API_KEY_FILE`), held in memory as a zeroizing secret.
+- **Supply chain:** CI pins every action to a commit SHA, gives
+  `packages: write` only to the image job, and fails on `cargo audit` or
+  `npm audit --audit-level=high`.
 - **No fleet state here.** Sessions, usage and everything Jarvis knows are
   read live from the API.
 
 ## Layout
 
 ```
-server/src/main.rs     CLI: serve (default) | hash-password
-server/src/lib.rs      app(): /auth, /bff, static page, security headers
-server/src/auth.rs     unlock, cookie, rate limits, CSRF header (x-jarvis: 1)
+server/src/main.rs     CLI: serve (default) | hash-password | bans | unban <ip>
+server/src/lib.rs      app(): /auth, /bff, static page, security headers (CSP + Trusted Types)
+server/src/auth.rs     unlock, cookie, idle lock, rate limits, CSRF header, Sec-Fetch-Site
 server/src/bff.rs      allowlisted passthrough to the API (SSE streams through)
-server/src/db.rs       SQLite: web_sessions, login_failures
+server/src/honey.rs    honeypot: trap paths, bait .env, canary, bans
+server/src/db.rs       SQLite: web_sessions, login_failures, bans, trap_hits, …
+web/src/html.ts        the one Trusted Types policy + the escaping `html` template
 server/src/mic.rs      the one-HUD-listens lease (memory only)
 server/tests/web.rs    contract tests through the real router, API stubbed
 web/                   Vite + TypeScript page (no framework), self-hosted fonts
@@ -86,9 +111,9 @@ ssh -t root@198.199.66.109 "cd /opt/iron-fleet/deploy/droplet && docker compose 
 
 The lock screen asks who you are, then that profile's passphrase.
 
-- **Mr. Walker** is the owner: `JARVIS_WEB_PASSWORD_HASH` + `WEB_API_KEY`, every panel.
+- **Mr. Walker** is the owner: `JARVIS_WEB_PASSWORD_HASH` + `WEB_API_KEY_FILE`, every panel.
 - **Mr. Powers** appears when both `JARVIS_WEB_POWERS_PASSWORD_HASH` and
-  `WEB_POWERS_API_KEY` are set (the same `hash-password` step; he types his own).
+  `WEB_POWERS_API_KEY_FILE` are set (the same `hash-password` step; he types his own).
   - Least privilege: his own conversation on the `jarvis-powers` agent, his own
     reminders, visits and microphone lease, and the Fleet, Usage and Terminal tabs.
   - No Systems, Jobs, briefing or credit ledger.

@@ -71,7 +71,7 @@ export class Transcript {
   constructor(private readonly list: HTMLElement) {}
 
   clear() {
-    this.list.innerHTML = "";
+    this.list.replaceChildren();
     this.seen.clear();
   }
 

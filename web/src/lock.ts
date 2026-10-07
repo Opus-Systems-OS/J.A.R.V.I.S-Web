@@ -28,6 +28,7 @@ export function showLock(onUnlocked: (me: Profile) => void, onGesture?: () => vo
   const back = el<HTMLButtonElement>("lock-back");
   const form = el<HTMLFormElement>("lock-form");
   const input = el<HTMLInputElement>("lock-password");
+  const fax = el<HTMLInputElement>("lock-fax");
   const submit = el<HTMLButtonElement>("lock-submit");
   const status = el<HTMLParagraphElement>("lock-status");
   let lockedUntil = 0;
@@ -117,7 +118,7 @@ export function showLock(onUnlocked: (me: Profile) => void, onGesture?: () => vo
     root.classList.remove("denied");
     say("Verifying…");
     try {
-      await unlock(chosen.id, input.value);
+      await unlock(chosen.id, input.value, fax.value);
       input.value = "";
       const me = await webGet<Profile>("me");
       say(`Welcome back, ${me.name}`);

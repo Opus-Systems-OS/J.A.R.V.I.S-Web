@@ -446,6 +446,40 @@
   flex-direction: column;
 }
 
+.systems-side {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-height: 0;
+}
+
+.systems-security .panel-body {
+  overflow-y: auto;
+  max-height: 22rem;
+}
+
+.sec-label {
+  margin: 0 0 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.sec-label + .rows {
+  margin-bottom: 0.9rem;
+}
+
+.rows .row.sec-ban {
+  grid-template-columns: 8px auto 1fr auto;
+}
+
+.sec-unban {
+  font-size: 0.62rem;
+  padding: 0.15rem 0.5rem;
+}
+
 .map-wrap {
   flex: 1;
   display: flex;

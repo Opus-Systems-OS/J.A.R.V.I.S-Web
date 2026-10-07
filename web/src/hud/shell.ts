@@ -4,7 +4,8 @@
 // — and owns nothing else: no fleet state, no conversation state beyond
 // the session bookmark Jarvis keeps.
 
-import { get, lock, type Me, type Profile } from "../api";
+import { get, lock, lockEverywhere, type Me, type Profile } from "../api";
+import { html, setHtml, type Html } from "../html";
 import { CreditWatch, creditLine, dollars, fishDollars, level, type Credits } from "./credits";
 import { ago, FleetView } from "./fleet";
 import { greeting } from "./greeting";
@@ -23,13 +24,13 @@ import { isoSeconds, UsageView } from "./usage";
 
 const DRAWER_KEY = "jarvis.drawer";
 
-const PANEL = (id: string, title: string, body: string) => `
+const PANEL = (id: string, title: string, body: Html) => html`
   <section class="panel" id="${id}">
     <header class="panel-head"><span class="panel-title">${title}</span><span class="panel-tag" data-tag>standby</span></header>
     <div class="panel-body">${body}</div>
   </section>`;
 
-const ORB_SVG = `
+const ORB_SVG = html`
   <svg viewBox="0 0 200 200">
     <circle class="ring ring-outer" cx="100" cy="100" r="92" />
     <circle class="ring ring-ticks" cx="100" cy="100" r="82" />
@@ -41,11 +42,11 @@ const ORB_SVG = `
 
 /** The owner sees every panel; anyone else, their own conversation, fleet
  * sessions, spend and terminal (no Systems, no Jobs, no credit ledger). */
-const template = (full: boolean) => `
+const template = (full: boolean) => html`
   <header class="topbar">
     <div class="brand"><span class="brand-mark" aria-hidden="true"></span>J.A.R.V.I.S.</div>
     <nav class="tabs" role="tablist">
-      ${tabsFor(full).map((t, i) => `<button role="tab" class="tab" data-tab="${t}" aria-selected="${i === 0}">${t}</button>`).join("")}
+      ${tabsFor(full).map((t, i) => html`<button role="tab" class="tab" data-tab="${t}" aria-selected="${i === 0}">${t}</button>`)}
     </nav>
     <div class="readouts">
       <span class="chip" id="hud-mic" data-state="off" title="Microphone">Mic</span>
@@ -53,6 +54,7 @@ const template = (full: boolean) => `
       <span class="readout readout-clock" id="hud-clock"></span>
       <span class="chip" id="hud-link" data-state="pending">Link</span>
       <button class="btn-ghost" id="hud-lock" title="Lock">Lock</button>
+      <button class="btn-ghost" id="hud-lock-all" title="Lock every browser unlocked as you, this one included">Lock all</button>
     </div>
   </header>
   <div class="banner" id="hud-banner" role="status">
@@ -63,8 +65,8 @@ const template = (full: boolean) => `
   <div class="views">
   <div class="stage" data-view="HUD">
     <aside class="column column-left">
-      ${PANEL("panel-fleet", "Fleet", `<ul class="rows recent" id="recent-rows"><li class="panel-empty">Reading the fleet…</li></ul>`)}
-      ${full ? PANEL("panel-jobs", "Jobs", `<ul class="rows" id="job-rows"><li class="panel-empty">No jobs dispatched</li></ul>`) : ""}
+      ${PANEL("panel-fleet", "Fleet", html`<ul class="rows recent" id="recent-rows"><li class="panel-empty">Reading the fleet…</li></ul>`)}
+      ${full ? PANEL("panel-jobs", "Jobs", html`<ul class="rows" id="job-rows"><li class="panel-empty">No jobs dispatched</li></ul>`) : ""}
     </aside>
     <div class="center">
       <button class="orb" id="orb" data-state="idle" aria-label="Talk to Jarvis">${ORB_SVG}</button>
@@ -72,12 +74,12 @@ const template = (full: boolean) => `
       <p class="orb-sub" id="orb-sub"></p>
     </div>
     <aside class="column column-right">
-      ${full ? PANEL("panel-systems", "Systems", `<ul class="rows" id="systems-rows"><li class="panel-empty">Reading the tower…</li></ul>`) : ""}
-      ${PANEL("panel-usage", "Usage", `<ul class="rows" id="usage-rows"><li class="panel-empty">Reading the ledger…</li></ul>`)}
+      ${full ? PANEL("panel-systems", "Systems", html`<ul class="rows" id="systems-rows"><li class="panel-empty">Reading the tower…</li></ul>`) : ""}
+      ${PANEL("panel-usage", "Usage", html`<ul class="rows" id="usage-rows"><li class="panel-empty">Reading the ledger…</li></ul>`)}
     </aside>
   </div>
   <div class="view" data-view="Fleet" id="view-fleet" hidden></div>
-  ${full ? `<div class="view" data-view="Systems" id="view-systems" hidden></div>` : ""}
+  ${full ? html`<div class="view" data-view="Systems" id="view-systems" hidden></div>` : ""}
   <div class="view" data-view="Usage" id="view-usage" hidden></div>
   <div class="view" data-view="Terminal" id="view-terminal" hidden></div>
   </div>
@@ -90,7 +92,7 @@ const template = (full: boolean) => `
         <span class="drawer-meta" id="drawer-meta"></span>
         <label class="select-wrap" title="Model — changing it starts a new conversation">
           <span class="sr-only">Model</span>
-          <select id="hud-model">${MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("")}</select>
+          <select id="hud-model">${MODELS.map((m) => html`<option value="${m.id}">${m.label}</option>`)}</select>
         </label>
         <button class="btn-ghost" id="drawer-new" title="Start a new conversation">New</button>
       </header>
@@ -149,7 +151,7 @@ export interface Hud {
 /** `speaker` was primed inside the unlock click, so it may play audio. */
 export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => void, profile: Profile): Hud {
   const full = profile.full;
-  root.innerHTML = template(full);
+  setHtml(root, template(full));
   root.dataset.tab = "HUD";
   root.hidden = false;
   root.classList.remove("entering");
@@ -397,6 +399,10 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     await lock();
     onLocked();
   };
+  $<HTMLButtonElement>("#hud-lock-all").onclick = async () => {
+    await lockEverywhere();
+    onLocked();
+  };
 
   // ---- systems panel (the owner's) ------------------------------------------
   const renderSystems = async () => {
@@ -422,7 +428,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       const tag = root.querySelector<HTMLElement>("#panel-systems [data-tag]");
       if (tag) tag.textContent = `${ops.filter((r) => r.state === "ok").length}/${ops.length} ok`;
     } catch {
-      rows.innerHTML = `<li class="panel-empty">Operations feed unavailable</li>`;
+      setHtml(rows, html`<li class="panel-empty">Operations feed unavailable</li>`);
     }
   };
   if (full) {
@@ -542,7 +548,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       const tag = root.querySelector<HTMLElement>("#panel-fleet [data-tag]");
       if (tag) tag.textContent = `${list.filter((s) => s.status === "running").length} running`;
     } catch {
-      recent.innerHTML = `<li class="panel-empty">Fleet unavailable</li>`;
+      setHtml(recent, html`<li class="panel-empty">Fleet unavailable</li>`);
     }
   };
   void renderRecent();
@@ -561,7 +567,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     const working = jobs.filter((j) => j.status === "running" || j.status === "rescheduling").length;
     if (tag) tag.textContent = working ? `${working} working` : "standby";
     if (!jobs.length) {
-      jobRows.innerHTML = `<li class="panel-empty">No jobs dispatched</li>`;
+      setHtml(jobRows, html`<li class="panel-empty">No jobs dispatched</li>`);
       return;
     }
     jobRows.replaceChildren(

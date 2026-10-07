@@ -5,10 +5,19 @@
 //! profile it was unlocked as. Every request after that carries the
 //! profile's `Profile` as an extension.
 //!
+//! A session also locks after `SESSION_IDLE_MINUTES` unused, and a profile
+//! can lock every browser it is unlocked in at once.
+//!
 //! Brute force is bounded before any hashing happens: 5 failures per IP per
 //! 15 minutes and 30 per hour from everyone. Mutating requests must carry
 //! `x-jarvis: 1`, which a cross-site form cannot send and a cross-site
 //! `fetch` cannot send without a CORS preflight this server never answers.
+//! And no request to the API surface may come from another site at all:
+//! browsers say where a request came from (`Sec-Fetch-Site`), and anything
+//! but this origin is refused, reads included.
+//!
+//! The lock form is also a tripwire (`honey.rs`): the canary passphrase or
+//! a filled-in honey field bans the sender.
 
 use crate::config::Profile;
 use crate::error::{Error, Result};
@@ -40,6 +49,9 @@ pub struct LoginBody {
     #[serde(default = "owner_id")]
     pub profile: String,
     pub password: String,
+    /// The honey field: off-screen on the lock form, so only a bot fills it.
+    #[serde(default)]
+    pub fax_number: String,
 }
 
 fn owner_id() -> String {
@@ -163,6 +175,19 @@ pub async fn login(
     Json(body): Json<LoginBody>,
 ) -> Result<Response> {
     let ip = client_ip(&headers);
+    let tripped = if !body.fax_number.is_empty() {
+        Some(crate::honey::HONEYFIELD)
+    } else if body.password == state.db.canary()? {
+        Some(crate::honey::CANARY)
+    } else {
+        None
+    };
+    if let Some(reason) = tripped {
+        // It fails like any wrong passphrase; the ban shows from the next request.
+        crate::honey::ban(&state, &ip, reason, "/auth/login")?;
+        state.db.record_failure(&ip)?;
+        return Err(Error::Unauthorized);
+    }
     check_limits(&state, &ip)?;
     // An unknown profile fails exactly like a wrong password.
     let profile = state.config.profile(&body.profile).cloned();
@@ -196,10 +221,8 @@ pub async fn login(
     Ok(res)
 }
 
-pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
-    if let Some(token) = cookie_token(&headers) {
-        state.db.delete_session(&sha256_hex(&token))?;
-    }
+/// 204 that also drops the cookie.
+fn locked_response() -> Response {
     let mut res = StatusCode::NO_CONTENT.into_response();
     res.headers_mut().insert(
         header::SET_COOKIE,
@@ -207,7 +230,39 @@ pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result
             "__Host-jw=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0",
         ),
     );
-    Ok(res)
+    res
+}
+
+pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
+    if let Some(token) = cookie_token(&headers) {
+        state.db.delete_session(&sha256_hex(&token))?;
+    }
+    Ok(locked_response())
+}
+
+/// `POST /web/sessions/revoke-all`: lock every browser unlocked as this
+/// profile, this one included.
+pub async fn revoke_all(
+    State(state): State<AppState>,
+    Extension(p): Extension<Profile>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    let n = state.db.delete_profile_sessions(&p.id)?;
+    tracing::info!(ip = %client_ip(&headers), profile = %p.id, sessions = n, "locked every device");
+    Ok(locked_response())
+}
+
+/// The profile `headers`' cookie unlocks, if it still does: unexpired, used
+/// within the idle window, and its profile still configured.
+pub fn unlocked_profile(state: &AppState, headers: &HeaderMap) -> Result<Option<Profile>> {
+    let Some(token) = cookie_token(headers) else {
+        return Ok(None);
+    };
+    let idle = i64::from(state.config.session_idle_minutes) * 60;
+    Ok(state
+        .db
+        .session_profile(&sha256_hex(&token), idle)?
+        .and_then(|id| state.config.profile(&id).cloned()))
 }
 
 /// Middleware: an unlocked session is required; its profile rides along.
@@ -217,12 +272,7 @@ pub async fn require_session(
     mut req: Request,
     next: Next,
 ) -> Result<Response> {
-    let token = cookie_token(req.headers()).ok_or(Error::Unauthorized)?;
-    let profile = state
-        .db
-        .session_profile(&sha256_hex(&token))?
-        .and_then(|id| state.config.profile(&id).cloned())
-        .ok_or(Error::Unauthorized)?;
+    let profile = unlocked_profile(&state, req.headers())?.ok_or(Error::Unauthorized)?;
     req.extensions_mut().insert(profile);
     Ok(next.run(req).await)
 }
@@ -245,6 +295,18 @@ pub async fn require_csrf_header(req: Request, next: Next) -> Result<Response> {
         .is_some_and(|v| v.as_bytes() == b"1");
     if !safe && !marked {
         return Err(Error::Forbidden("missing x-jarvis header"));
+    }
+    Ok(next.run(req).await)
+}
+
+/// Middleware: nothing from another site. A browser names the requester's
+/// relation in `Sec-Fetch-Site`; only `same-origin` and `none` (typed or
+/// bookmarked) pass. Clients that don't send it (curl, the uptime check)
+/// are unaffected — they hold no cookie a forged request could ride on.
+pub async fn require_same_site(req: Request, next: Next) -> Result<Response> {
+    let site = req.headers().get("sec-fetch-site").map(|v| v.as_bytes());
+    if site.is_some_and(|s| s != b"same-origin" && s != b"none") {
+        return Err(Error::Forbidden("cross-site request"));
     }
     Ok(next.run(req).await)
 }

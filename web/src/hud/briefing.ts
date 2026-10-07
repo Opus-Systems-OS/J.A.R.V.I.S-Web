@@ -37,9 +37,12 @@ function hourIn(now: Date): number {
   return Number(new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "numeric", hour12: false }).format(now)) % 24;
 }
 
+/** The rows, or none when the API answered something else. */
+const rowsOf = (b: Briefing): SourceRow[] => (Array.isArray(b?.sources) ? b.sources : []);
+
 /** The detail of a source that answered. */
 function detail(b: Briefing, id: string): Record<string, unknown> | null {
-  const row = b.sources.find((s) => s.id === id);
+  const row = rowsOf(b).find((s) => s.id === id);
   return row && row.state !== "down" && row.detail ? row.detail : null;
 }
 
@@ -116,6 +119,6 @@ export function briefingLines(b: Briefing, now = new Date()): string[] {
 export function compactBriefing(b: Briefing): unknown {
   return {
     since: b.since,
-    sources: b.sources.map((s) => ({ source: s.id, state: s.state, headline: s.headline, detail: s.detail ?? undefined })),
+    sources: rowsOf(b).map((s) => ({ source: s.id, state: s.state, headline: s.headline, detail: s.detail ?? undefined })),
   };
 }

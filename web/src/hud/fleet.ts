@@ -4,6 +4,7 @@
 // only which one is selected.
 
 import { ApiError, get, post } from "../api";
+import { html, setHtml } from "../html";
 import { Transcript, type SessionEvent } from "./transcript";
 
 interface Agent {
@@ -61,7 +62,7 @@ export class FleetView {
     private readonly root: HTMLElement,
     private readonly environments: readonly string[] = ENVIRONMENTS,
   ) {
-    root.innerHTML = `
+    setHtml(root, html`
       <div class="fleet">
         <section class="panel fleet-agents">
           <header class="panel-head"><span class="panel-title">Agents</span><span class="panel-tag" id="fleet-agent-count"></span></header>
@@ -97,7 +98,7 @@ export class FleetView {
             <button class="btn-primary btn-small" type="submit">Send</button>
           </form>
         </section>
-      </div>`;
+      </div>`);
     this.transcript = new Transcript(this.$("#detail-transcript"));
     this.$<HTMLSelectElement>("#session-filter").onchange = (e) => {
       this.filter = (e.target as HTMLSelectElement).value;
@@ -214,7 +215,7 @@ export class FleetView {
     }
     const list = this.$<HTMLUListElement>("#session-list");
     if (!sessions.length) {
-      list.innerHTML = `<li class="panel-empty">No sessions</li>`;
+      setHtml(list, html`<li class="panel-empty">No sessions</li>`);
       return;
     }
     list.replaceChildren(

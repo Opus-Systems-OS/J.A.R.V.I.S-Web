@@ -72,12 +72,18 @@ export async function profiles(): Promise<ProfileChoice[]> {
   return (await res.json()) as ProfileChoice[];
 }
 
-export async function unlock(profile: string, password: string): Promise<void> {
-  await request("POST", "/auth/login", { profile, password });
+/** `fax_number` is the lock form's honey field: always empty from a person. */
+export async function unlock(profile: string, password: string, fax_number = ""): Promise<void> {
+  await request("POST", "/auth/login", { profile, password, fax_number });
 }
 
 export async function lock(): Promise<void> {
   await request("POST", "/auth/logout").catch(() => undefined);
+}
+
+/** Lock every browser unlocked as this profile, this one included. */
+export async function lockEverywhere(): Promise<void> {
+  await request("POST", "/web/sessions/revoke-all").catch(() => lock());
 }
 
 /** `/web/*`: this site's own small routes (the mic lease). */
@@ -95,6 +101,11 @@ export async function web<T>(path: string, body: unknown, keepalive = false): Pr
   }
   const res = await request("POST", `/web/${path}`, body);
   return (await res.json()) as T;
+}
+
+/** `POST /web/*` with no reply body (a 204). */
+export async function webSend(path: string, body: unknown): Promise<void> {
+  await request("POST", `/web/${path}`, body);
 }
 
 /** `GET /web/*`: this site's own reads (the credit ledger). */

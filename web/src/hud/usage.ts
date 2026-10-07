@@ -5,6 +5,7 @@
 // the table, the bars and the download are the same numbers.
 
 import { raw, web } from "../api";
+import { html, setHtml } from "../html";
 import { dollars, fishDollars, type Credits } from "./credits";
 
 const TZ = "America/Los_Angeles";
@@ -129,7 +130,7 @@ export class UsageView {
     private readonly onCredits: (c: Credits) => void,
     credits = true,
   ) {
-    root.innerHTML = `
+    setHtml(root, html`
       <div class="usage">
         <section class="panel usage-credit" id="credit-anthropic">
           <header class="panel-head"><span class="panel-title">Anthropic</span><span class="panel-tag">estimate</span></header>
@@ -164,7 +165,7 @@ export class UsageView {
             <span class="panel-title">Fleet spend</span>
             <span class="usage-actions">
               <span class="seg" role="group" aria-label="Window">
-                ${WINDOWS.map((d) => `<button class="seg-btn" data-days="${d}" aria-pressed="${d === this.days}">${d} d</button>`).join("")}
+                ${WINDOWS.map((d) => html`<button class="seg-btn" data-days="${d}" aria-pressed="${d === this.days}">${d} d</button>`)}
               </span>
               <button class="btn-ghost" id="usage-csv">CSV</button>
             </span>
@@ -182,7 +183,7 @@ export class UsageView {
             </table>
           </div>
         </section>
-      </div>`;
+      </div>`);
 
     this.root.querySelectorAll<HTMLButtonElement>(".seg-btn").forEach(
       (b) =>
