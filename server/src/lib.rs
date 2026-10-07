@@ -15,6 +15,7 @@ pub mod config;
 pub mod credits;
 pub mod db;
 pub mod error;
+pub mod honey;
 pub mod mic;
 pub mod reminders;
 pub mod request_id;
@@ -53,9 +54,14 @@ impl AppState {
 
 /// Content-Security-Policy for everything served: the page loads nothing
 /// from anywhere but this origin, and talks to nothing but this origin.
+/// Every DOM write of markup must go through the page's one Trusted Types
+/// policy (`web/src/html.ts`, which escapes what it interpolates), so a
+/// stray `innerHTML = untrusted` throws instead of running.
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
 img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; \
-worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'none'; \
+form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests; \
+require-trusted-types-for 'script'; trusted-types jarvis";
 
 fn security_headers(router: Router) -> Router {
     let set = |name: HeaderName, value: &'static str| {
@@ -74,6 +80,21 @@ fn security_headers(router: Router) -> Router {
             header::STRICT_TRANSPORT_SECURITY,
             "max-age=31536000; includeSubDomains",
         ))
+        // No window from another site keeps a handle on ours, and nothing
+        // here may be embedded or read cross-origin.
+        .layer(set(
+            HeaderName::from_static("cross-origin-opener-policy"),
+            "same-origin",
+        ))
+        .layer(set(
+            HeaderName::from_static("cross-origin-resource-policy"),
+            "same-origin",
+        ))
+        .layer(set(
+            HeaderName::from_static("x-permitted-cross-domain-policies"),
+            "none",
+        ))
+        .layer(set(HeaderName::from_static("origin-agent-cluster"), "?1"))
 }
 
 /// The built page. Hashed assets are immutable; everything else (the shell,
@@ -112,6 +133,9 @@ pub fn app(state: AppState) -> Router {
         .route("/web/reminders/{id}/cancel", post(reminders::cancel))
         .route("/web/reminders/{id}/delivered", post(reminders::delivered))
         .route("/web/visit", post(reminders::visit))
+        .route("/web/sessions/revoke-all", post(auth::revoke_all))
+        .route("/web/security", get(honey::get))
+        .route("/web/security/unban", post(honey::unban))
         .route_layer(from_fn_with_state(state.clone(), auth::require_session));
 
     let api = Router::new()
@@ -120,6 +144,7 @@ pub fn app(state: AppState) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .merge(bff)
         .layer(from_fn(auth::require_csrf_header))
+        .layer(from_fn(auth::require_same_site))
         .with_state(state.clone());
 
     let router = match &state.config.static_dir {
@@ -128,6 +153,7 @@ pub fn app(state: AppState) -> Router {
     };
     security_headers(
         router
+            .layer(from_fn_with_state(state.clone(), honey::guard))
             .layer(from_fn(request_id::layer))
             .layer(TraceLayer::new_for_http()),
     )

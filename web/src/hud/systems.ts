@@ -4,7 +4,8 @@
 // rig's Ollama, key last-use from /v1/clients (the Quest, the Mac apps,
 // Windows), and running sessions. Nothing is inferred that isn't there.
 
-import { get } from "../api";
+import { get, webGet, webSend } from "../api";
+import { html, setHtml, type Html } from "../html";
 import { ago } from "./fleet";
 
 type State = "ok" | "warn" | "down" | "idle" | "unknown";
@@ -110,6 +111,12 @@ function clientState(c: Client): State {
   return "idle";
 }
 
+/** `GET /web/security`: what the honeypot caught (unix seconds). */
+interface Security {
+  bans: { ip: string; at: number; reason: string; path: string }[];
+  hits: { ip: string; at: number; path: string; ua: string; banned: boolean }[];
+}
+
 export class SystemsView {
   private nodes: NodeDef[] = [...FIXED];
   private readonly live = new Map<string, Live>();
@@ -118,17 +125,28 @@ export class SystemsView {
   private clients: Client[] = [];
 
   constructor(private readonly root: HTMLElement) {
-    root.innerHTML = `
+    setHtml(root, html`
       <div class="systems">
         <section class="panel systems-map">
           <header class="panel-head"><span class="panel-title">Architecture</span><span class="panel-tag" id="map-updated"></span></header>
           <div class="map-wrap"><svg class="map" id="map" viewBox="0 0 1000 570" role="img" aria-label="Opus Systems OS architecture"></svg></div>
         </section>
-        <section class="panel systems-detail">
-          <header class="panel-head"><span class="panel-title" id="node-title">Select a node</span><span class="panel-tag" id="node-state"></span></header>
-          <div class="panel-body"><dl class="node-facts" id="node-facts"></dl></div>
-        </section>
-      </div>`;
+        <div class="systems-side">
+          <section class="panel systems-detail">
+            <header class="panel-head"><span class="panel-title" id="node-title">Select a node</span><span class="panel-tag" id="node-state"></span></header>
+            <div class="panel-body"><dl class="node-facts" id="node-facts"></dl></div>
+          </section>
+          <section class="panel systems-security">
+            <header class="panel-head"><span class="panel-title">Defenses</span><span class="panel-tag" id="sec-tag"></span></header>
+            <div class="panel-body">
+              <p class="sec-label">Banned</p>
+              <ul class="rows" id="sec-bans"></ul>
+              <p class="sec-label">Recent trap hits</p>
+              <ul class="rows" id="sec-hits"></ul>
+            </div>
+          </section>
+        </div>
+      </div>`);
   }
 
   show() {
@@ -146,6 +164,7 @@ export class SystemsView {
   }
 
   private async refresh() {
+    void this.refreshSecurity();
     const [ops, docker, tailscale, rig, clients, sessions] = await Promise.allSettled([
       get<{ services: OpsRow[] }>("ops"),
       get<{ detail?: { containers?: Container[] } }>("ops/docker"),
@@ -231,6 +250,66 @@ export class SystemsView {
     if (this.selected) this.showNode(this.selected);
   }
 
+  /** The honeypot's bans and latest trap hits (`/web/security`). */
+  private async refreshSecurity() {
+    const bans = this.$("#sec-bans");
+    const hits = this.$("#sec-hits");
+    const tag = this.$("#sec-tag");
+    let sec: Security;
+    try {
+      sec = await webGet<Security>("security");
+    } catch {
+      setHtml(bans, html`<li class="panel-empty">Unavailable</li>`);
+      hits.replaceChildren();
+      tag.textContent = "";
+      return;
+    }
+    const when = (at: number) => ago(new Date(at * 1000).toISOString());
+    const row = (state: string, name: string, detail: string, title: string) => {
+      const li = document.createElement("li");
+      li.className = "row";
+      li.dataset.state = state;
+      li.title = title;
+      const n = document.createElement("span");
+      n.className = "row-name";
+      n.textContent = name;
+      const d = document.createElement("span");
+      d.className = "row-detail";
+      d.textContent = detail;
+      li.append(n, d);
+      return li;
+    };
+    tag.textContent = `${sec.bans.length} banned`;
+    if (!sec.bans.length) setHtml(bans, html`<li class="panel-empty">Nobody</li>`);
+    else
+      bans.replaceChildren(
+        ...sec.bans.map((b) => {
+          const li = row("down", b.ip, `${b.reason} · ${b.path} · ${when(b.at)}`, `${b.reason}: ${b.path}`);
+          li.classList.add("sec-ban");
+          const unban = document.createElement("button");
+          unban.className = "btn-ghost sec-unban";
+          unban.textContent = "Unban";
+          unban.onclick = async () => {
+            unban.disabled = true;
+            try {
+              await webSend("security/unban", { ip: b.ip });
+            } finally {
+              void this.refreshSecurity();
+            }
+          };
+          li.append(unban);
+          return li;
+        }),
+      );
+    if (!sec.hits.length) setHtml(hits, html`<li class="panel-empty">None</li>`);
+    else
+      hits.replaceChildren(
+        ...sec.hits.slice(0, 8).map((h) =>
+          row(h.banned ? "down" : "warn", h.path, `${h.ip} · ${when(h.at)}${h.banned ? "" : " · unlocked, not banned"}`, h.ua || "no user agent"),
+        ),
+      );
+  }
+
   private $(sel: string) {
     return this.root.querySelector(sel) as HTMLElement;
   }
@@ -251,14 +330,14 @@ export class SystemsView {
     const svg = this.$("#map");
     const pos = new Map(this.nodes.map((n) => [n.id, n]));
     const stateOf = (id: string): State => this.live.get(id)?.state ?? "unknown";
-    const edges: string[] = [];
+    const edges: Html[] = [];
     const edge = (a: string, b: string, kind = "") => {
       const p = pos.get(a);
       const q = pos.get(b);
       if (!p || !q) return;
       const st = stateOf(a) === "down" || stateOf(b) === "down" ? "down" : stateOf(b) === "idle" || stateOf(a) === "idle" ? "idle" : "ok";
       const mx = (p.x + q.x) / 2;
-      edges.push(`<path class="edge ${kind}" data-state="${st}" d="M${p.x},${p.y} C${mx},${p.y} ${mx},${q.y} ${q.x},${q.y}" />`);
+      edges.push(html`<path class="edge ${kind}" data-state="${st}" d="M${p.x},${p.y} C${mx},${p.y} ${mx},${q.y} ${q.x},${q.y}" />`);
     };
     for (const [a, b, kind] of EDGES) edge(a, b, kind);
     for (const n of this.nodes.filter((n) => n.id.startsWith("client:"))) {
@@ -266,25 +345,24 @@ export class SystemsView {
     }
     for (const id of ["github", "cloudflare", "uptimerobot"]) edge(id, "caddy", "external");
 
-    const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
     const nodes = this.nodes.map((n) => {
       const w = n.w ?? NODE_W;
       const live = this.live.get(n.id);
-      return `<g class="node" tabindex="0" role="button" data-id="${esc(n.id)}" data-state="${live?.state ?? "unknown"}" transform="translate(${n.x - w / 2},${n.y - NODE_H / 2})">
+      return html`<g class="node" tabindex="0" role="button" data-id="${n.id}" data-state="${live?.state ?? "unknown"}" transform="translate(${n.x - w / 2},${n.y - NODE_H / 2})">
         <rect width="${w}" height="${NODE_H}" rx="3" />
         <circle class="dot" cx="12" cy="15" r="4" />
-        <text class="node-label" x="22" y="19">${esc(n.label)}</text>
-        <text class="node-sub" x="12" y="36">${esc(fit(live?.sub ?? "", Math.floor((w - 20) / 5.8)))}</text>
+        <text class="node-label" x="22" y="19">${n.label}</text>
+        <text class="node-sub" x="12" y="36">${fit(live?.sub ?? "", Math.floor((w - 20) / 5.8))}</text>
       </g>`;
     });
-    svg.innerHTML = `
+    setHtml(svg, html`
       <rect class="zone" x="250" y="40" width="300" height="410" rx="4" />
       <text class="zone-label" x="262" y="60">DROPLET · opustower.dev</text>
       <text class="zone-label" x="30" y="30">CLIENTS</text>
       <text class="zone-label" x="690" y="30">ANTHROPIC</text>
       <text class="zone-label" x="850" y="505">TAILNET</text>
-      ${edges.join("")}
-      ${nodes.join("")}`;
+      ${edges}
+      ${nodes}`);
     svg.querySelectorAll<SVGGElement>(".node").forEach((g) => {
       const open = () => {
         this.selected = g.dataset.id ?? null;

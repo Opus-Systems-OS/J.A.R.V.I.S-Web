@@ -1,5 +1,5 @@
 //! SQLite for what this site owns: unlocked browser sessions, failed unlock
-//! attempts, the credit ledger — the Anthropic balance you typed after a
+//! attempts, the honeypot's trap hits and bans, the credit ledger — the Anthropic balance you typed after a
 //! top-up and your warning thresholds — the reminders Jarvis sets, and when
 //! you last opened the HUD. Fleet state, usage and everything
 //! Jarvis knows are read live through the API — never stored here. Times
@@ -47,6 +47,26 @@ CREATE TABLE IF NOT EXISTS profile_visits (
   profile  TEXT PRIMARY KEY,
   last_at  INTEGER NOT NULL
 );
+-- The honeypot (`honey.rs`). A ban lasts until it is lifted by hand.
+CREATE TABLE IF NOT EXISTS bans (
+  ip      TEXT PRIMARY KEY,
+  at      INTEGER NOT NULL,
+  reason  TEXT NOT NULL,
+  path    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trap_hits (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  ip      TEXT NOT NULL,
+  at      INTEGER NOT NULL,
+  path    TEXT NOT NULL,
+  ua      TEXT NOT NULL,
+  banned  INTEGER NOT NULL      -- 0 = logged only (an unlocked browser)
+);
+-- The bait passphrase in the fake `.env`: made once, kept across restarts.
+CREATE TABLE IF NOT EXISTS honey (
+  id      INTEGER PRIMARY KEY CHECK (id = 1),
+  canary  TEXT NOT NULL
+);
 "#;
 
 /// Columns added after a table first shipped: an `ALTER` guarded by
@@ -54,6 +74,8 @@ CREATE TABLE IF NOT EXISTS profile_visits (
 /// before profiles existed are Mr. Walker's.
 const ADDED: &[(&str, &str, &str)] = &[
     ("web_sessions", "profile", "TEXT NOT NULL DEFAULT 'walker'"),
+    // 0 = not seen since unlock; `created_at` stands in.
+    ("web_sessions", "last_seen_at", "INTEGER NOT NULL DEFAULT 0"),
     ("reminders", "profile", "TEXT NOT NULL DEFAULT 'walker'"),
 ];
 
@@ -82,6 +104,30 @@ pub struct Reminder {
     pub text: String,
     pub due_at: i64,
     pub created_at: i64,
+}
+
+/// How many trap hits are kept; older ones go as new ones arrive.
+const TRAP_HITS_KEPT: i64 = 2000;
+
+/// An address the honeypot shut out.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Ban {
+    pub ip: String,
+    pub at: i64,
+    /// `trap`, `canary` or `honeyfield`.
+    pub reason: String,
+    pub path: String,
+}
+
+/// One request to a trap path.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TrapHit {
+    pub ip: String,
+    pub at: i64,
+    pub path: String,
+    pub ua: String,
+    /// `false` when it came from an unlocked browser (logged, not banned).
+    pub banned: bool,
 }
 
 /// The ledger's one row.
@@ -158,24 +204,51 @@ impl Db {
             // Expired rows go whenever a new one arrives; there are few.
             c.execute("DELETE FROM web_sessions WHERE expires_at <= ?1", [now])?;
             c.execute(
-                "INSERT INTO web_sessions (token_sha256, created_at, expires_at, ip, profile)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO web_sessions (token_sha256, created_at, expires_at, ip, profile, last_seen_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?2)",
                 params![token_sha256, now, now + ttl_secs, ip, profile],
             )?;
             Ok(())
         })
     }
 
-    /// The profile an unexpired session was unlocked as.
-    pub fn session_profile(&self, token_sha256: &str) -> Result<Option<String>> {
+    /// The profile an unexpired session was unlocked as, provided it was
+    /// seen within the last `idle_secs`. Seeing it again moves that window,
+    /// written at most once a minute so a busy HUD isn't a write per request.
+    pub fn session_profile(&self, token_sha256: &str, idle_secs: i64) -> Result<Option<String>> {
+        let now = now();
         self.with(|c| {
-            c.query_row(
-                "SELECT profile FROM web_sessions WHERE token_sha256 = ?1 AND expires_at > ?2",
-                params![token_sha256, now()],
-                |r| r.get(0),
-            )
-            .optional()
+            let found: Option<(String, i64)> = c
+                .query_row(
+                    "SELECT profile, MAX(last_seen_at, created_at) FROM web_sessions
+                     WHERE token_sha256 = ?1 AND expires_at > ?2",
+                    params![token_sha256, now],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((profile, seen)) = found else {
+                return Ok(None);
+            };
+            if seen <= now - idle_secs {
+                c.execute(
+                    "DELETE FROM web_sessions WHERE token_sha256 = ?1",
+                    [token_sha256],
+                )?;
+                return Ok(None);
+            }
+            if seen <= now - 60 {
+                c.execute(
+                    "UPDATE web_sessions SET last_seen_at = ?2 WHERE token_sha256 = ?1",
+                    params![token_sha256, now],
+                )?;
+            }
+            Ok(Some(profile))
         })
+    }
+
+    /// Lock every browser unlocked as `profile`. Returns how many.
+    pub fn delete_profile_sessions(&self, profile: &str) -> Result<usize> {
+        self.with(|c| c.execute("DELETE FROM web_sessions WHERE profile = ?1", [profile]))
     }
 
     pub fn delete_session(&self, token_sha256: &str) -> Result<()> {
@@ -226,6 +299,94 @@ impl Db {
         self.with(|c| {
             c.execute("DELETE FROM login_failures WHERE ip = ?1", [ip])
                 .map(|_| ())
+        })
+    }
+
+    // ---- honeypot --------------------------------------------------------------
+
+    /// The bait passphrase, made on first use.
+    pub fn canary(&self) -> Result<String> {
+        let fresh = crate::honey::new_canary();
+        self.with(|c| {
+            c.execute(
+                "INSERT OR IGNORE INTO honey (id, canary) VALUES (1, ?1)",
+                [&fresh],
+            )?;
+            c.query_row("SELECT canary FROM honey WHERE id = 1", [], |r| r.get(0))
+        })
+    }
+
+    pub fn record_trap(&self, ip: &str, path: &str, ua: &str, banned: bool) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO trap_hits (ip, at, path, ua, banned) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![ip, now(), path, ua, banned],
+            )?;
+            c.execute(
+                "DELETE FROM trap_hits WHERE id <= (SELECT MAX(id) FROM trap_hits) - ?1",
+                [TRAP_HITS_KEPT],
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// Ban `ip`. The first reason sticks.
+    pub fn ban(&self, ip: &str, reason: &str, path: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT OR IGNORE INTO bans (ip, at, reason, path) VALUES (?1, ?2, ?3, ?4)",
+                params![ip, now(), reason, path],
+            )
+            .map(|_| ())
+        })
+    }
+
+    pub fn is_banned(&self, ip: &str) -> Result<bool> {
+        self.with(|c| {
+            c.query_row("SELECT 1 FROM bans WHERE ip = ?1", [ip], |_| Ok(()))
+                .optional()
+                .map(|r| r.is_some())
+        })
+    }
+
+    /// Whether there was a ban to lift.
+    pub fn unban(&self, ip: &str) -> Result<bool> {
+        self.with(|c| {
+            c.execute("DELETE FROM bans WHERE ip = ?1", [ip])
+                .map(|n| n > 0)
+        })
+    }
+
+    /// Every ban, newest first.
+    pub fn bans(&self) -> Result<Vec<Ban>> {
+        self.with(|c| {
+            c.prepare("SELECT ip, at, reason, path FROM bans ORDER BY at DESC, ip")?
+                .query_map([], |r| {
+                    Ok(Ban {
+                        ip: r.get(0)?,
+                        at: r.get(1)?,
+                        reason: r.get(2)?,
+                        path: r.get(3)?,
+                    })
+                })?
+                .collect()
+        })
+    }
+
+    /// The latest `limit` trap hits, newest first.
+    pub fn trap_hits(&self, limit: u32) -> Result<Vec<TrapHit>> {
+        self.with(|c| {
+            c.prepare("SELECT ip, at, path, ua, banned FROM trap_hits ORDER BY id DESC LIMIT ?1")?
+                .query_map([limit], |r| {
+                    Ok(TrapHit {
+                        ip: r.get(0)?,
+                        at: r.get(1)?,
+                        path: r.get(2)?,
+                        ua: r.get(3)?,
+                        banned: r.get(4)?,
+                    })
+                })?
+                .collect()
         })
     }
 
@@ -430,7 +591,10 @@ mod tests {
         )
         .unwrap();
         let db = Db::init(conn).unwrap();
-        assert_eq!(db.session_profile("t").unwrap().as_deref(), Some("walker"));
+        assert_eq!(
+            db.session_profile("t", i64::MAX).unwrap().as_deref(),
+            Some("walker")
+        );
         assert_eq!(db.pending_reminders("walker").unwrap().len(), 1);
         assert!(db.pending_reminders("powers").unwrap().is_empty());
         assert_eq!(db.visit("walker").unwrap(), Some(1234));
@@ -464,5 +628,74 @@ mod tests {
         .unwrap();
         let c = db.credits().unwrap();
         assert_eq!((c.anchor_cents, c.fish_warn_cents), (Some(900), 50));
+    }
+
+    #[test]
+    fn an_idle_session_locks_and_a_used_one_does_not() {
+        let db = Db::in_memory().unwrap();
+        db.insert_session("fresh", 3600, "1.2.3.4", "walker")
+            .unwrap();
+        db.insert_session("stale", 3600, "1.2.3.4", "walker")
+            .unwrap();
+        db.with(|c| {
+            c.execute(
+                "UPDATE web_sessions SET created_at = ?1, last_seen_at = ?1 WHERE token_sha256 = 'stale'",
+                [now() - 7300],
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            db.session_profile("fresh", 7200).unwrap().as_deref(),
+            Some("walker")
+        );
+        assert_eq!(db.session_profile("stale", 7200).unwrap(), None);
+        // …and it is gone, not just refused.
+        assert_eq!(db.session_profile("stale", i64::MAX).unwrap(), None);
+    }
+
+    #[test]
+    fn locking_every_device_is_per_profile() {
+        let db = Db::in_memory().unwrap();
+        db.insert_session("a", 3600, "1.2.3.4", "walker").unwrap();
+        db.insert_session("b", 3600, "5.6.7.8", "walker").unwrap();
+        db.insert_session("c", 3600, "5.6.7.8", "powers").unwrap();
+        assert_eq!(db.delete_profile_sessions("walker").unwrap(), 2);
+        assert_eq!(db.session_profile("a", 7200).unwrap(), None);
+        assert_eq!(
+            db.session_profile("c", 7200).unwrap().as_deref(),
+            Some("powers")
+        );
+    }
+
+    #[test]
+    fn bans_last_until_lifted_and_the_canary_is_stable() {
+        let db = Db::in_memory().unwrap();
+        let canary = db.canary().unwrap();
+        assert_eq!(db.canary().unwrap(), canary);
+        assert!(!db.is_banned("9.9.9.9").unwrap());
+        db.ban("9.9.9.9", "trap", "/.env").unwrap();
+        db.ban("9.9.9.9", "canary", "/auth/login").unwrap();
+        assert!(db.is_banned("9.9.9.9").unwrap());
+        assert_eq!(db.bans().unwrap()[0].reason, "trap");
+        assert!(db.unban("9.9.9.9").unwrap());
+        assert!(!db.unban("9.9.9.9").unwrap());
+        assert!(!db.is_banned("9.9.9.9").unwrap());
+    }
+
+    #[test]
+    fn trap_hits_are_capped() {
+        let db = Db::in_memory().unwrap();
+        for i in 0..(TRAP_HITS_KEPT + 5) {
+            db.record_trap("9.9.9.9", &format!("/t{i}"), "curl", true)
+                .unwrap();
+        }
+        let n: i64 = db
+            .with(|c| c.query_row("SELECT COUNT(*) FROM trap_hits", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(n, TRAP_HITS_KEPT);
+        assert_eq!(
+            db.trap_hits(1).unwrap()[0].path,
+            format!("/t{}", TRAP_HITS_KEPT + 4)
+        );
     }
 }

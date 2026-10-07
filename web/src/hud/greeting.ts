@@ -4,7 +4,8 @@
 // Buffer — only what's worth saying), then the systems, then any low
 // balance. Each unlock is recorded as a visit, so "new since you were last
 // here" means since the last unlock on any device. Anyone but the owner is
-// greeted by name and nothing else: the day and the systems are his.
+// greeted by name and nothing else: the day and the systems are his. Any
+// address the honeypot banned since the last visit is mentioned last.
 
 import { get, web, webGet, type Profile } from "../api";
 import { briefingLines, type Briefing } from "./briefing";
@@ -39,15 +40,32 @@ export function systemsLine(rows: { service: string; state: string; headline: st
   return `${lead}; ${list}.`;
 }
 
+/** A ban the honeypot made (`/web/security`, unix seconds). */
+export interface BanRow {
+  ip: string;
+  at: number;
+}
+
+/** "The honeypot has banned two addresses since your last visit." — or
+ * nothing, when it banned none (or this is the first visit). */
+export function defensesLine(bans: BanRow[], since: string | null): string | null {
+  const from = since ? Date.parse(since) : NaN;
+  if (!Number.isFinite(from)) return null;
+  const fresh = bans.filter((b) => b.at * 1000 > from).length;
+  if (!fresh) return null;
+  return `The honeypot has banned ${say(fresh)} ${fresh === 1 ? "address" : "addresses"} since your last visit; they're under Systems, Defenses.`;
+}
+
 export async function greeting(profile: Profile): Promise<string> {
   const visit = await web<{ previous: string | null }>("visit", {}).catch(() => ({ previous: null }));
   if (!profile.full) return `${salutation(new Date(), profile.name)}. What can I do for you?`;
   const since = visit.previous ? `?since=${encodeURIComponent(visit.previous)}` : "";
-  const [ops, rig, credits, briefing] = await Promise.allSettled([
+  const [ops, rig, credits, briefing, security] = await Promise.allSettled([
     get<Record<string, unknown>>("ops"),
     get<{ online?: boolean }>("rig"),
     webGet<Credits>("credits"),
     get<Briefing>(`briefing${since}`),
+    webGet<{ bans: BanRow[] }>("security"),
   ]);
   const parts = [`${salutation()}.`];
   // No briefing (the key lacks sources:read, or the API is older): the
@@ -57,5 +75,7 @@ export async function greeting(profile: Profile): Promise<string> {
   if (rig.status === "fulfilled" && rig.value.online) parts.push("The rig is up, if you need local models.");
   const warning = credits.status === "fulfilled" ? creditLine(credits.value) : null;
   if (warning) parts.push(warning);
+  const defenses = security.status === "fulfilled" ? defensesLine(security.value.bans ?? [], visit.previous) : null;
+  if (defenses) parts.push(defenses);
   return parts.join(" ");
 }

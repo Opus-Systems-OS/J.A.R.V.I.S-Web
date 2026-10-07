@@ -5,6 +5,7 @@
 // says so. Nothing here reaches the droplet or the rig — only the sandbox.
 
 import type { SessionEvent } from "./transcript";
+import { html, setHtml } from "../html";
 
 const MAX_OUTPUT = 20_000;
 
@@ -39,7 +40,7 @@ export class TerminalView {
     root: HTMLElement,
     private readonly host: TerminalHost,
   ) {
-    root.innerHTML = `
+    setHtml(root, html`
       <div class="term">
         <header class="term-head">
           <span class="panel-title">Terminal</span>
@@ -50,7 +51,7 @@ export class TerminalView {
           <span class="term-prompt" aria-hidden="true">jarvis@sandbox:~$</span>
           <input id="term-input" autocomplete="off" spellcheck="false" aria-label="Command" placeholder="ls /workspace" />
         </form>
-      </div>`;
+      </div>`);
     this.out = root.querySelector("#term-out") as HTMLElement;
     this.input = root.querySelector("#term-input") as HTMLInputElement;
     (root.querySelector("#term-form") as HTMLFormElement).onsubmit = (e) => {

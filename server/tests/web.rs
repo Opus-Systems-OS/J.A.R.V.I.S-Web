@@ -62,6 +62,7 @@ impl Default for Knobs {
 
 struct Harness {
     app: Router,
+    db: Db,
     seen: Seen,
     knobs: Knobs,
     _static_dir: tempdir::Dir,
@@ -136,6 +137,18 @@ async fn stub_api(seen: Seen, knobs: Knobs) -> String {
             }),
         )
         .route(
+            "/v1/files/{id}/content",
+            get(|| async {
+                (
+                    [
+                        (header::CONTENT_TYPE, "text/html"),
+                        (header::CONTENT_DISPOSITION, "inline; filename=\"page.html\""),
+                    ],
+                    "<script>alert(1)</script>",
+                )
+            }),
+        )
+        .route(
             "/v1/me",
             get(move |req: AxumRequest| async move {
                 record(&s1, req).await;
@@ -186,11 +199,15 @@ async fn stub_api(seen: Seen, knobs: Knobs) -> String {
 }
 
 async fn harness() -> Harness {
+    harness_with(|_| {}).await
+}
+
+async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
     let seen: Seen = Arc::default();
     let knobs = Knobs::default();
     let api_url = stub_api(seen.clone(), knobs.clone()).await;
     let dir = tempdir::new();
-    let config = Config {
+    let mut config = Config {
         port: 0,
         database_path: "unused".into(),
         api_url,
@@ -199,23 +216,27 @@ async fn harness() -> Harness {
                 id: "walker".into(),
                 name: "Mr. Walker".into(),
                 password_hash: password_hash(),
-                api_key: WEB_KEY.to_owned(),
+                api_key: WEB_KEY.to_owned().into(),
                 full: true,
             },
             Profile {
                 id: "powers".into(),
                 name: "Mr. Powers".into(),
                 password_hash: powers_hash(),
-                api_key: POWERS_KEY.to_owned(),
+                api_key: POWERS_KEY.to_owned().into(),
                 full: false,
             },
         ],
         static_dir: Some(dir.0.clone()),
         session_hours: 12,
+        session_idle_minutes: 120,
     };
-    let state = AppState::new(config, Db::in_memory().unwrap()).unwrap();
+    tweak(&mut config);
+    let db = Db::in_memory().unwrap();
+    let state = AppState::new(config, db.clone()).unwrap();
     Harness {
         app: app(state),
+        db,
         seen,
         knobs,
         _static_dir: dir,
@@ -521,6 +542,11 @@ async fn shell_and_assets_carry_the_right_headers() {
         .to_str()
         .unwrap()
         .contains("microphone=(self)"));
+    assert!(
+        csp.contains("require-trusted-types-for 'script'") && csp.contains("trusted-types jarvis")
+    );
+    assert_eq!(r.headers["cross-origin-opener-policy"], "same-origin");
+    assert_eq!(r.headers["cross-origin-resource-policy"], "same-origin");
 
     // Unknown paths get the shell (client-side tabs), not a 404.
     let r = send(&h, get("/usage")).await;
@@ -962,4 +988,295 @@ async fn reminders_visits_and_the_mic_are_per_profile() {
     assert_eq!(r.json()["held"], true);
     let r = send(&h, mic(&powers, "powers-tab-1")).await;
     assert_eq!(r.json()["held"], true, "his own microphone");
+}
+
+// ---- defenses -----------------------------------------------------------------
+
+fn from(uri: &str, ip: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("x-forwarded-for", ip)
+        .header(header::USER_AGENT, "scanner/1.0")
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn with_cookie(mut req: Request<Body>, cookie: &str) -> Request<Body> {
+    req.headers_mut()
+        .insert(header::COOKIE, cookie.parse().unwrap());
+    req
+}
+
+#[tokio::test]
+async fn nothing_from_another_site_reaches_the_api_surface() {
+    let h = harness().await;
+    let cookie = unlock(&h).await;
+    for site in ["cross-site", "same-site"] {
+        for path in ["/web/me", "/bff/v1/me"] {
+            let mut req = bff(Method::GET, path, Some(&cookie), None);
+            req.headers_mut()
+                .insert("sec-fetch-site", site.parse().unwrap());
+            let r = send(&h, req).await;
+            assert_eq!(r.status, StatusCode::FORBIDDEN, "{site} {path}");
+            assert_envelope(&r.json(), "forbidden");
+        }
+    }
+    for site in [Some("same-origin"), Some("none"), None] {
+        let mut req = bff(Method::GET, "/web/me", Some(&cookie), None);
+        if let Some(s) = site {
+            req.headers_mut()
+                .insert("sec-fetch-site", s.parse().unwrap());
+        }
+        assert_eq!(send(&h, req).await.status, StatusCode::OK, "{site:?}");
+    }
+}
+
+#[tokio::test]
+async fn an_agents_file_downloads_and_never_renders() {
+    let h = harness().await;
+    let cookie = unlock(&h).await;
+    let r = send(
+        &h,
+        bff(
+            Method::GET,
+            "/bff/v1/files/file_1/content?session=sesn_1",
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        r.headers[header::CONTENT_DISPOSITION],
+        "attachment; filename=\"page.html\""
+    );
+    assert_eq!(
+        r.headers[header::CONTENT_SECURITY_POLICY],
+        "sandbox; default-src 'none'"
+    );
+    assert_eq!(r.headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+}
+
+#[tokio::test]
+async fn a_trap_serves_bait_and_bans_the_address_everywhere() {
+    let h = harness().await;
+    let ip = "198.51.100.7";
+    let r = send(&h, from("/.env", ip)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let bait = String::from_utf8_lossy(&r.body).into_owned();
+    let canary = h.db.canary().unwrap();
+    assert!(
+        bait.contains(&format!("JARVIS_WEB_PASSWORD={canary}")),
+        "{bait}"
+    );
+    assert!(!bait.contains("osk_"));
+
+    for path in ["/", "/auth/profiles", "/healthz", "/assets/app-abc123.js"] {
+        let r = send(&h, from(path, ip)).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}");
+    }
+    // The right passphrase doesn't help a banned address…
+    assert_eq!(
+        send(&h, login_req(PASSWORD, ip)).await.status,
+        StatusCode::FORBIDDEN
+    );
+    // …and nobody else is affected.
+    assert_eq!(
+        send(&h, from("/", "198.51.100.8")).await.status,
+        StatusCode::OK
+    );
+
+    let hits = h.db.trap_hits(10).unwrap();
+    assert_eq!(
+        (hits[0].path.as_str(), hits[0].ua.as_str(), hits[0].banned),
+        ("/.env", "scanner/1.0", true)
+    );
+    assert_eq!(h.db.bans().unwrap()[0].reason, "trap");
+}
+
+#[tokio::test]
+async fn other_traps_404_and_still_ban() {
+    let h = harness().await;
+    for (i, path) in ["/wp-login.php", "/admin", "/.git/config", "/bff/v1/keys"]
+        .iter()
+        .enumerate()
+    {
+        let ip = format!("198.51.100.{}", 20 + i);
+        let r = send(&h, from(path, &ip)).await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{path}");
+        assert!(h.db.is_banned(&ip).unwrap(), "{path}");
+    }
+}
+
+#[tokio::test]
+async fn an_unlocked_browser_and_an_unknown_address_are_never_banned() {
+    let h = harness().await;
+    let cookie = unlock(&h).await; // from 203.0.113.9
+    let r = send(&h, with_cookie(from("/admin", "203.0.113.9"), &cookie)).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert!(!h.db.is_banned("203.0.113.9").unwrap());
+    assert!(!h.db.trap_hits(1).unwrap()[0].banned);
+
+    // No X-Forwarded-For: the address is "unknown", which would be everyone.
+    let r = send(
+        &h,
+        Request::builder().uri("/.env").body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(h.db.bans().unwrap().is_empty());
+    assert_eq!(
+        send(&h, Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn a_banned_address_with_a_valid_unlock_still_gets_in() {
+    let h = harness().await;
+    let cookie = unlock(&h).await;
+    h.db.ban("203.0.113.9", "trap", "/admin").unwrap();
+    let r = send(&h, with_cookie(from("/web/me", "203.0.113.9"), &cookie)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        send(&h, from("/web/me", "203.0.113.9")).await.status,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn the_canary_passphrase_and_the_honey_field_ban() {
+    let h = harness().await;
+    let canary = h.db.canary().unwrap();
+    let r = send(&h, login_req(&canary, "198.51.100.40")).await;
+    assert_eq!(
+        r.status,
+        StatusCode::UNAUTHORIZED,
+        "looks like any wrong passphrase"
+    );
+    assert!(h.db.is_banned("198.51.100.40").unwrap());
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/auth/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-jarvis", "1")
+        .header("x-forwarded-for", "198.51.100.41")
+        .body(Body::from(
+            json!({ "password": PASSWORD, "fax_number": "555-0100" }).to_string(),
+        ))
+        .unwrap();
+    let r = send(&h, req).await;
+    assert_eq!(
+        r.status,
+        StatusCode::UNAUTHORIZED,
+        "even with the right passphrase"
+    );
+    assert!(r.headers.get(header::SET_COOKIE).is_none());
+    assert_eq!(
+        h.db.bans()
+            .unwrap()
+            .iter()
+            .find(|b| b.ip == "198.51.100.41")
+            .unwrap()
+            .reason,
+        "honeyfield"
+    );
+
+    // An empty honey field is what the real form sends.
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/auth/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-jarvis", "1")
+        .header("x-forwarded-for", "198.51.100.42")
+        .body(Body::from(
+            json!({ "password": PASSWORD, "fax_number": "" }).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(send(&h, req).await.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn the_owner_sees_and_lifts_bans_and_nobody_else_can() {
+    let h = harness().await;
+    send(&h, from("/.env", "198.51.100.50")).await;
+    let walker = unlock(&h).await;
+    let powers = unlock_as(&h, "powers", POWERS_PASSWORD).await;
+
+    let r = send(&h, bff(Method::GET, "/web/security", Some(&walker), None)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let j = r.json();
+    assert_eq!(j["bans"][0]["ip"], "198.51.100.50");
+    assert_eq!(j["hits"][0]["path"], "/.env");
+
+    let unban = |c: &str| {
+        bff(
+            Method::POST,
+            "/web/security/unban",
+            Some(c),
+            Some(json!({"ip": "198.51.100.50"})),
+        )
+    };
+    assert_eq!(
+        send(&h, bff(Method::GET, "/web/security", Some(&powers), None))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(send(&h, unban(&powers)).await.status, StatusCode::FORBIDDEN);
+    assert!(h.db.is_banned("198.51.100.50").unwrap());
+
+    assert_eq!(
+        send(&h, unban(&walker)).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(&h, from("/", "198.51.100.50")).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(send(&h, unban(&walker)).await.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn an_idle_session_locks() {
+    let h = harness_with(|c| c.session_idle_minutes = 0).await;
+    let cookie = unlock(&h).await;
+    let r = send(&h, bff(Method::GET, "/web/me", Some(&cookie), None)).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn locking_every_device_ends_every_session_of_that_profile_only() {
+    let h = harness().await;
+    let a = unlock(&h).await;
+    let b = unlock(&h).await;
+    let powers = unlock_as(&h, "powers", POWERS_PASSWORD).await;
+
+    let r = send(
+        &h,
+        bff(Method::POST, "/web/sessions/revoke-all", Some(&a), None),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert!(r.headers[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .contains("Max-Age=0"));
+    for c in [&a, &b] {
+        assert_eq!(
+            send(&h, bff(Method::GET, "/web/me", Some(c), None))
+                .await
+                .status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        send(&h, bff(Method::GET, "/web/me", Some(&powers), None))
+            .await
+            .status,
+        StatusCode::OK
+    );
 }
