@@ -40,7 +40,8 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   `*.php`, `/admin`, `/bff/v1/keys`, …), the canary passphrase in the fake
   `/.env`, and the lock form's hidden honey field all ban the address. A
   browser holding a valid unlock is never banned (and gets in even from a
-  banned address); unban from **Systems → Defenses** or
+  banned address). Only public addresses are banned: on the droplet every
+  IPv6 visitor arrives as Docker's gateway `172.18.0.1`. Unban from **Systems → Defenses** or
   `docker compose exec jarvis-web jarvis-web unban <ip>`.
   Jarvis mentions any new bans in the greeting when you unlock.
 - **Sessions:** 12 h at most, and 2 h unused locks them (`SESSION_IDLE_MINUTES`).

@@ -12,9 +12,12 @@
 //!   never see and form-filling bots fill.
 //!
 //! Safety rails: a request carrying a valid unlock cookie is never banned
-//! (its trap hits are only logged), and neither is an address we could not
-//! read (`unknown` would be everyone). Banned addresses get a 403 on every
-//! route, unless they hold a valid cookie.
+//! (its trap hits are only logged), and neither is any address that isn't a
+//! single public client — `unknown`, private, loopback, link-local or CGNAT.
+//! On the droplet every IPv6 visitor reaches Caddy through Docker's userland
+//! proxy as the bridge gateway (`172.18.0.1`), so banning that one would
+//! ban them all. Banned addresses get a 403 on every route, unless they hold
+//! a valid cookie.
 
 use crate::auth::{self, client_ip};
 use crate::config::Profile;
@@ -83,9 +86,29 @@ fn clip(s: &str) -> String {
     s.chars().take(MAX_LOGGED).collect()
 }
 
-/// Whether `ip` can be banned at all.
+/// Whether `ip` can be banned at all: only a public address names one
+/// client. Anything else may stand for many (see the module docs).
 fn bannable(ip: &str) -> bool {
-    ip != "unknown"
+    use std::net::IpAddr;
+    match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || (a == 100 && (64..128).contains(&b))) // CGNAT 100.64/10
+        }
+        Ok(IpAddr::V6(v6)) => {
+            let first = v6.segments()[0];
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || (first & 0xfe00) == 0xfc00 // unique local fc00::/7
+                || (first & 0xffc0) == 0xfe80) // link-local fe80::/10
+        }
+        Err(_) => false,
+    }
 }
 
 /// Ban `ip` for `reason`. Returns whether it was banned (an unreadable
@@ -236,6 +259,29 @@ mod tests {
             "/.well-known/security.txt",
         ] {
             assert!(!is_trap(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn only_a_public_address_can_be_banned() {
+        for ip in ["198.51.100.7", "67.127.41.1", "2604:a880:400:d1::1"] {
+            assert!(bannable(ip), "{ip}");
+        }
+        for ip in [
+            "unknown",
+            "",
+            "172.18.0.1", // the Docker bridge gateway: every IPv6 visitor
+            "10.0.0.5",
+            "192.168.1.2",
+            "127.0.0.1",
+            "169.254.1.1",
+            "100.79.233.8", // tailnet (CGNAT)
+            "0.0.0.0",
+            "::1",
+            "fd7a:115c:a1e0::1",
+            "fe80::1",
+        ] {
+            assert!(!bannable(ip), "{ip}");
         }
     }
 

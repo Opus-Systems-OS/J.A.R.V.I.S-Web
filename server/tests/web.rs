@@ -1117,6 +1117,15 @@ async fn an_unlocked_browser_and_an_unknown_address_are_never_banned() {
     assert!(!h.db.is_banned("203.0.113.9").unwrap());
     assert!(!h.db.trap_hits(1).unwrap()[0].banned);
 
+    // The Docker bridge gateway stands for every IPv6 visitor on the droplet.
+    let r = send(&h, from("/.env", "172.18.0.1")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(!h.db.is_banned("172.18.0.1").unwrap());
+    assert_eq!(
+        send(&h, from("/", "172.18.0.1")).await.status,
+        StatusCode::OK
+    );
+
     // No X-Forwarded-For: the address is "unknown", which would be everyone.
     let r = send(
         &h,
