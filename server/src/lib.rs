@@ -16,6 +16,7 @@ pub mod credits;
 pub mod db;
 pub mod error;
 pub mod honey;
+pub mod intel;
 pub mod mic;
 pub mod reminders;
 pub mod request_id;
@@ -36,6 +37,7 @@ pub struct AppState {
     pub db: db::Db,
     pub http: reqwest::Client,
     pub mic: std::sync::Arc<mic::Lease>,
+    pub intel: std::sync::Arc<intel::Intel>,
 }
 
 impl AppState {
@@ -48,6 +50,7 @@ impl AppState {
             db,
             http,
             mic: std::sync::Arc::default(),
+            intel: std::sync::Arc::default(),
         })
     }
 }
@@ -136,6 +139,8 @@ pub fn app(state: AppState) -> Router {
         .route("/web/sessions/revoke-all", post(auth::revoke_all))
         .route("/web/security", get(honey::get))
         .route("/web/security/unban", post(honey::unban))
+        .route("/web/intel/feed", get(intel::feed))
+        .route("/web/intel/search", get(intel::search))
         .route_layer(from_fn_with_state(state.clone(), auth::require_session));
 
     let api = Router::new()

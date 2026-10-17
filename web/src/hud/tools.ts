@@ -4,7 +4,7 @@
 // see exactly what this page can — and nothing it can't. All read-only
 // except `open_panel`, which only moves the HUD.
 
-import { get } from "../api";
+import { get, webGet } from "../api";
 import { compactBriefing, type Briefing } from "./briefing";
 import { compactJobs, type Job } from "./jobs";
 import * as reminders from "./reminders";
@@ -17,12 +17,12 @@ export interface ToolDef {
 }
 
 /** The HUD's tabs: the owner's, and everyone else's (no Systems). */
-export const TABS_FULL = ["HUD", "Fleet", "Systems", "Usage", "Terminal"];
+export const TABS_FULL = ["HUD", "Fleet", "Intel", "Systems", "Usage", "Terminal"];
 export const TABS_LIMITED = ["HUD", "Fleet", "Usage", "Terminal"];
 export const tabsFor = (full: boolean) => (full ? TABS_FULL : TABS_LIMITED);
 
 /** The owner's alone: the services, his day, the jobs he dispatched. */
-const OWNER_ONLY = new Set(["opus_status", "fleet_jobs", "briefing"]);
+const OWNER_ONLY = new Set(["opus_status", "fleet_jobs", "briefing", "intel_feed"]);
 
 const openPanelTool = (tabs: string[]): ToolDef => ({
   type: "custom",
@@ -31,6 +31,7 @@ const openPanelTool = (tabs: string[]): ToolDef => ({
     `Switch the HUD the user is looking at to one of its tabs: ${tabs.join(", ")}. HUD is the orb, Fleet the agents and ` +
     "sessions, Usage spend, Terminal the sandbox" +
     (tabs.includes("Systems") ? ", Systems the architecture map" : "") +
+    (tabs.includes("Intel") ? ", Intel the live news and hazards globe" : "") +
     ". Use when the user says 'show me …' or 'open …'.",
   input_schema: {
     type: "object",
@@ -91,6 +92,20 @@ const TOOLS: ToolDef[] = [
   },
   {
     type: "custom",
+    name: "intel_feed",
+    description:
+      "What is happening right now, from the Intel tab's live feeds: US and world news wires (Google News, NPR, BBC, CBS, ABC, " +
+      "Guardian, Al Jazeera) and hazards (USGS earthquakes, NASA EONET wildfires and storms, CAL FIRE, InciWeb, NWS severe alerts), " +
+      "newest first, each with category, place, source and time. Optional `filter` keeps items whose title, place or category " +
+      "contains it (e.g. 'California', 'fire', 'Ukraine'). Use it for 'what's going on', 'any fires', 'news in Texas'.",
+    input_schema: {
+      type: "object",
+      properties: { filter: { type: "string", description: "A word to match, e.g. California" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
     name: "set_reminder",
     description:
       "Set a reminder that the HUD speaks when it is due (or at his next unlock if no HUD is open). Give either " +
@@ -127,6 +142,7 @@ const TOOLS: ToolDef[] = [
 ];
 
 type Json = Record<string, unknown>;
+type IntelFeed = import("./intel/model").Feed;
 
 /** `/v1/ops` → `{services: [{id, name, state, headline, checked_at}]}`, trimmed. */
 export function compactOps(ops: Json): { service: string; state: string; headline: string }[] {
@@ -213,6 +229,23 @@ export async function runTool(
         if (!Number.isInteger(id)) return { content: "id must be a reminder id from list_reminders", is_error: true };
         await reminders.cancel(id);
         return { content: `cancelled reminder ${id}` };
+      }
+      case "intel_feed": {
+        const [{ toStory }, feed] = await Promise.all([import("./intel/model"), webGet<IntelFeed>("intel/feed")]);
+        const f = typeof args.filter === "string" ? args.filter.trim().toLowerCase() : "";
+        const items = feed.items
+          .map(toStory)
+          .filter((s) => !f || `${s.title} ${s.where?.name ?? ""} ${s.category} ${s.summary}`.toLowerCase().includes(f))
+          .slice(0, 30)
+          .map((s) => ({
+            title: s.title,
+            category: s.category,
+            place: s.where?.name,
+            source: s.source,
+            published: s.published,
+            summary: s.summary ? s.summary.slice(0, 200) : undefined,
+          }));
+        return { content: JSON.stringify({ generated_at: feed.generated_at, items, sources_down: feed.sources.filter((x) => !x.ok).map((x) => x.name) }) };
       }
       case "fleet_jobs":
         return { content: JSON.stringify(compactJobs(ui.jobs())) };
