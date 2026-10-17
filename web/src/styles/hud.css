@@ -161,6 +161,23 @@
   letter-spacing: 0.08em;
 }
 
+/* Seven tabs and the readouts share one line down to laptop widths. */
+@media (max-width: 1560px) {
+  .topbar {
+    gap: 1rem;
+  }
+  .tab {
+    padding: 0.3rem 0.6rem;
+    letter-spacing: 0.16em;
+  }
+}
+
+@media (max-width: 1320px) {
+  .readout:not(.readout-clock) {
+    display: none;
+  }
+}
+
 .chip {
   padding: 0.15rem 0.55rem;
   border: 1px solid var(--line);

@@ -36,6 +36,8 @@ export function systemSuffix(profile: Profile): string {
       "Use briefing for his day (weather, calendar, email, YouTube, WHOOP, Buffer) and set_reminder when he asks to be reminded.",
       "Use intel_feed for what is happening in the news and natural hazards right now, in the US and the world (the Intel tab's live feeds).",
       "A message beginning [intel] comes from the Intel tab: its reply is shown there, not spoken, so follow that message's format instead.",
+      "To reverse-engineer an app, binary, package or website, use REA in your sandbox (the rea-agents npm package, CLI `rea`; static analysis only, never run the target).",
+      "A message beginning [rea] comes from the Reverse tab: likewise shown there, not spoken, so follow its format.",
     ].join(" ");
   }
   return [
