@@ -60,6 +60,16 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   must be http(s) and text is stripped of markup. Intel is the owner's.
   Search and Jarvis's briefs cover news and public-figure entries only:
   public role and record, never a private person's address, phone or family.
+- **Reverse runs in Jarvis's sandbox, never here.** The Reverse tab hands
+  Jarvis a target (an uploaded file, a link, or a path in his sandbox) and a
+  question as one silent `[rea]` turn; he installs
+  [REA](https://github.com/morluto/rea) (`rea-agents`) there and runs its CLI.
+  Static analysis only: the target is never executed, and no debugger,
+  Frida or process capture. Ghidra, JADX or a JDK are installed only when
+  "Go deeper" is ticked. Reports say where embedded secrets are, never their
+  values, and do not help bypass licensing, DRM or anti-cheat. Evidence is
+  saved to the session's outputs as `rea-<run>-*.json`. Runs share the
+  conversation's budget. Reverse is the owner's.
 - **No fleet state here.** Sessions, usage and everything Jarvis knows are
   read live from the API.
 
@@ -75,6 +85,7 @@ server/src/intel.rs    Intel: news + hazard feeds and search, fetched and normal
 server/src/db.rs       SQLite: web_sessions, login_failures, bans, trap_hits, …
 web/src/html.ts        the one Trusted Types policy + the escaping `html` template
 web/src/hud/intel/     the Intel tab: canvas globe, gazetteer, classifier, dossier
+web/src/hud/reverse/   the Reverse tab: REA workflows, the [rea] task, report and activity
 server/src/mic.rs      the one-HUD-listens lease (memory only)
 server/tests/web.rs    contract tests through the real router, API stubbed
 web/                   Vite + TypeScript page (no framework), self-hosted fonts
@@ -127,7 +138,7 @@ The lock screen asks who you are, then that profile's passphrase.
   `WEB_POWERS_API_KEY_FILE` are set (the same `hash-password` step; he types his own).
   - Least privilege: his own conversation on the `jarvis-powers` agent, his own
     reminders, visits and microphone lease, and the Fleet, Usage and Terminal tabs.
-  - No Systems, Jobs, briefing or credit ledger.
+  - No Intel, Reverse, Systems, Jobs, briefing or credit ledger.
   - His key is limited to `jarvis-powers` by the API (`opus-api keys create …
     --agents jarvis-powers`), so it cannot reach anyone else's sessions whatever
     the page asks.

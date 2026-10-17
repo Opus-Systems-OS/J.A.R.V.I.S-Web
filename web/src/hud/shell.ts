@@ -17,9 +17,10 @@ import { SystemsView } from "./systems";
 import { TerminalView, terminalTask } from "./terminal";
 import { compactOps, tabsFor } from "./tools";
 import { Attachments } from "./attach";
+import { ReverseView } from "./reverse/view";
 import { agentName, JobWatch, type Job } from "./jobs";
 import { ReminderWatch } from "./reminders";
-import { Transcript } from "./transcript";
+import { Transcript, type OutputFile } from "./transcript";
 import { isoSeconds, UsageView } from "./usage";
 
 const DRAWER_KEY = "jarvis.drawer";
@@ -80,6 +81,7 @@ const template = (full: boolean) => html`
   </div>
   <div class="view" data-view="Fleet" id="view-fleet" hidden></div>
   ${full ? html`<div class="view view-intel" data-view="Intel" id="view-intel" hidden></div>` : ""}
+  ${full ? html`<div class="view view-reverse" data-view="Reverse" id="view-reverse" hidden></div>` : ""}
   ${full ? html`<div class="view" data-view="Systems" id="view-systems" hidden></div>` : ""}
   <div class="view" data-view="Usage" id="view-usage" hidden></div>
   <div class="view" data-view="Terminal" id="view-terminal" hidden></div>
@@ -176,38 +178,55 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   const fleetView = full ? new FleetView($("#view-fleet")) : new FleetView($("#view-fleet"), []);
   const systemsView = full ? new SystemsView($("#view-systems")) : null;
   const usageView = new UsageView($("#view-usage"), (c) => watch.observe(c), full);
+  /** What a tab's written reply (an Intel brief, a Reverse report) may say aloud: its first line. */
+  const speakLead = (line: string) => {
+    if (!lease.held) return;
+    lastReplyAsked = false;
+    speaker.say(line);
+  };
+  /** The silent turn a tab is waiting on: its tag and replies, until idle. */
+  let sideTurn: { tag: string; parts: string[]; done: (text: string) => void } | null = null;
+  const askSilently = (tag: string, prompt: string, attachments: string[] = []) =>
+    new Promise<string>((resolve) => {
+      sideTurn?.done(sideTurn.parts.join("\n\n"));
+      sideTurn = { tag, parts: [], done: resolve };
+      speaker.stop();
+      void jarvis.ask(prompt, { silent: true, tag, attachments });
+    });
+  /** `abandon`: end the turn even if nothing came back (an error, a stop). */
+  const finishSide = (abandon: boolean) => {
+    if (!sideTurn || (!abandon && !sideTurn.parts.length)) return;
+    const turn = sideTurn;
+    sideTurn = null;
+    turn.done(abandon ? "" : turn.parts.join("\n\n"));
+  };
   // Intel (the owner's) loads its globe and map data only when first opened.
   let intelView: import("./intel/view").IntelView | null = null;
   let intelLoading: Promise<void> | null = null;
   const showIntel = () => {
     intelLoading ??= import("./intel/view").then(({ IntelView }) => {
       intelView = new IntelView($("#view-intel"), {
-        analyze: (prompt) =>
-          new Promise<string>((resolve) => {
-            intelTurn?.done(intelTurn.parts.join("\n\n"));
-            intelTurn = { parts: [], done: resolve };
-            speaker.stop();
-            void jarvis.ask(prompt, { silent: true, tag: "intel" });
-          }),
-        speak: (line) => {
-          if (!lease.held) return;
-          lastReplyAsked = false;
-          speaker.say(line);
-        },
+        analyze: (prompt) => askSilently("intel", prompt),
+        speak: speakLead,
       });
     });
     void intelLoading.then(() => {
       if (current === "Intel") intelView?.show();
     });
   };
-  /** The Intel brief being written: the silent turn's replies, until idle. */
-  let intelTurn: { parts: string[]; done: (text: string) => void } | null = null;
-  const finishIntel = (failed: boolean) => {
-    if (!intelTurn || (!failed && !intelTurn.parts.length)) return;
-    const turn = intelTurn;
-    intelTurn = null;
-    turn.done(failed ? "" : turn.parts.join("\n\n"));
-  };
+  // Reverse (the owner's): REA in Jarvis's sandbox, one silent [rea] turn a run.
+  const reverseView = full
+    ? new ReverseView($("#view-reverse"), {
+        investigate: (prompt, attachments) => askSilently("rea", prompt, attachments),
+        stop: () => {
+          void jarvis.interrupt();
+          if (sideTurn?.tag === "rea") finishSide(true);
+        },
+        speak: speakLead,
+        sessionId: () => jarvis.session,
+        outputs: async (id) => (await get<{ data?: OutputFile[] }>(`sessions/${id}/files`)).data ?? [],
+      })
+    : null;
   let current = "HUD";
   const openPanel = (tab: string) => {
     root.querySelectorAll<HTMLButtonElement>(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.tab === tab)));
@@ -217,8 +236,10 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     if (current === "Systems") systemsView?.hide();
     if (current === "Usage") usageView.hide();
     if (current === "Intel") intelView?.hide();
+    if (current === "Reverse") reverseView?.hide();
     current = tab;
     if (tab === "Intel" && full) showIntel();
+    if (tab === "Reverse") reverseView?.show();
     if (tab === "Fleet") fleetView.show();
     if (tab === "Systems") systemsView?.show();
     if (tab === "Usage") usageView.show();
@@ -331,8 +352,8 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       if (p === "thinking" && detail) sub.textContent = `“${detail}”`;
       if (p === "error" && detail) sub.textContent = detail;
       if (p === "idle" && !speaker.speaking) sub.textContent = "";
-      if (p === "idle") finishIntel(false);
-      if (p === "error") finishIntel(true);
+      if (p === "idle") finishSide(false);
+      if (p === "error") finishSide(true);
       renderOrb();
     },
     onReply: (text) => {
@@ -344,9 +365,12 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       meta.textContent = `$${(cost / 100).toFixed(2)}${cap ? ` of $${(cap / 100).toFixed(2)}` : ""}`;
     },
     openPanel,
-    onEvent: (e) => terminal.feed(e),
+    onEvent: (e) => {
+      terminal.feed(e);
+      reverseView?.feed(e);
+    },
     onSilentReply: (text, tag) => {
-      if (tag === "intel" && intelTurn) intelTurn.parts.push(text);
+      if (sideTurn && tag === sideTurn.tag) sideTurn.parts.push(text);
     },
     onBillingError: () => {
       if (!full) return; // the ledger is the owner's; Jarvis already said so
@@ -710,6 +734,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       fleetView.dispose();
       systemsView?.dispose();
       intelView?.dispose();
+      reverseView?.dispose();
       usageView.dispose();
       watch.stop();
     },

@@ -16,8 +16,8 @@ export interface ToolDef {
   input_schema: Record<string, unknown>;
 }
 
-/** The HUD's tabs: the owner's, and everyone else's (no Systems). */
-export const TABS_FULL = ["HUD", "Fleet", "Intel", "Systems", "Usage", "Terminal"];
+/** The HUD's tabs: the owner's, and everyone else's (no Intel, Reverse or Systems). */
+export const TABS_FULL = ["HUD", "Fleet", "Intel", "Reverse", "Systems", "Usage", "Terminal"];
 export const TABS_LIMITED = ["HUD", "Fleet", "Usage", "Terminal"];
 export const tabsFor = (full: boolean) => (full ? TABS_FULL : TABS_LIMITED);
 
@@ -32,6 +32,7 @@ const openPanelTool = (tabs: string[]): ToolDef => ({
     "sessions, Usage spend, Terminal the sandbox" +
     (tabs.includes("Systems") ? ", Systems the architecture map" : "") +
     (tabs.includes("Intel") ? ", Intel the live news and hazards globe" : "") +
+    (tabs.includes("Reverse") ? ", Reverse the reverse-engineering bench (REA)" : "") +
     ". Use when the user says 'show me …' or 'open …'.",
   input_schema: {
     type: "object",

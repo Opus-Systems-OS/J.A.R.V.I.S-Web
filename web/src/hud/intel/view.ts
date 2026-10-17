@@ -11,8 +11,11 @@
 
 import { ApiError, webGet } from "../../api";
 import { html, setHtml } from "../../html";
+import { leadLine, link, renderBrief } from "../brief";
 import { Globe, type GlobeNode } from "./globe";
 import { ago, CATEGORIES, cluster, COLOR, toStory, type Category, type Entry, type Feed, type IntelNode, type SearchResult, type Story } from "./model";
+
+export { leadLine, renderBrief };
 
 const REFRESH_MS = 5 * 60_000;
 const MAX_ROWS = 160;
@@ -101,74 +104,6 @@ const el = <T extends HTMLElement>(tag: string, cls?: string, text?: string): T 
   if (text !== undefined) e.textContent = text;
   return e;
 };
-
-function link(url: string, text: string, cls = "intel-link"): HTMLElement {
-  if (!/^https?:\/\//.test(url)) return el("span", cls, text);
-  const a = el<HTMLAnchorElement>("a", cls, text);
-  a.href = url;
-  a.target = "_blank";
-  a.rel = "noopener noreferrer";
-  return a;
-}
-
-/** Inline text with bare URLs turned into links; `**bold**` markers dropped. */
-function inline(parent: HTMLElement, text: string) {
-  const clean = text.replace(/\*\*(.+?)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1");
-  const re = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s)]+)/g;
-  let last = 0;
-  for (let m = re.exec(clean); m; m = re.exec(clean)) {
-    if (m.index > last) parent.append(clean.slice(last, m.index));
-    parent.append(link(m[2] ?? m[3], m[1] ?? m[3]));
-    last = m.index + m[0].length;
-  }
-  if (last < clean.length) parent.append(clean.slice(last));
-}
-
-/** Jarvis's markdown as DOM: headings, bullets, paragraphs, links. */
-export function renderBrief(root: HTMLElement, text: string) {
-  root.replaceChildren();
-  let list: HTMLElement | null = null;
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (!line || /^[-*_]{3,}$/.test(line)) {
-      list = null;
-      continue;
-    }
-    const heading = /^#{1,6}\s+(.*)$/.exec(line);
-    const bullet = /^(?:[-*•]|\d+[.)])\s+(.*)$/.exec(line);
-    if (heading) {
-      list = null;
-      const h = el("h4", "intel-brief-h");
-      inline(h, heading[1]);
-      root.append(h);
-    } else if (bullet) {
-      if (!list) {
-        list = el("ul", "intel-brief-list");
-        root.append(list);
-      }
-      const li = el("li");
-      inline(li, bullet[1]);
-      list.append(li);
-    } else {
-      list = null;
-      const p = el("p");
-      inline(p, line);
-      root.append(p);
-    }
-  }
-}
-
-/** The line read aloud: the brief's first plain sentence. */
-export function leadLine(text: string): string {
-  const first = text
-    .split("\n")
-    .map((l) => l.trim())
-    .find((l) => l && !l.startsWith("#") && !/^[-*•]/.test(l));
-  if (!first) return "";
-  const plain = first.replace(/\*\*|`|\[|\]\([^)]*\)/g, "");
-  const sentence = /^(.+?[.!?])(\s|$)/.exec(plain)?.[1] ?? plain;
-  return sentence.length > 320 ? `${sentence.slice(0, 317)}…` : sentence;
-}
 
 export class IntelView {
   private readonly globe: Globe;

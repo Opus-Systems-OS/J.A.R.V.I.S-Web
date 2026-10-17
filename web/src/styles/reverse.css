@@ -1,0 +1,498 @@
+/* ---- Reverse: target | report | activity ------------------------------------ */
+
+.rea {
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(280px, 0.95fr) minmax(0, 2fr) minmax(260px, 1fr);
+  gap: 1.25rem;
+  min-height: 0;
+}
+
+.rea .panel {
+  min-height: 0;
+}
+
+.btn-tiny {
+  padding: 0.15rem 0.45rem;
+  font-size: 0.6rem;
+}
+
+.btn-ghost:disabled {
+  opacity: 0.45;
+  cursor: progress;
+}
+
+/* Target form */
+.rea-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0.85rem;
+  overflow: auto;
+  min-height: 0;
+}
+
+.rea-kinds {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border: 1px solid var(--line);
+}
+
+.rea-kind {
+  padding: 0.4rem 0;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: none;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.rea-kind:last-child {
+  border-right: 0;
+}
+
+.rea-kind[aria-checked="true"] {
+  background: rgba(255, 122, 26, 0.14);
+  color: var(--accent-3);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.rea-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.rea-field[hidden] {
+  display: none;
+}
+
+.rea-label {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.rea-form input:not([type="checkbox"]),
+.rea-form textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  background: rgba(14, 6, 2, 0.6);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.rea-form textarea {
+  resize: vertical;
+  min-height: 5.5rem;
+  line-height: 1.4;
+}
+
+.rea-form input:focus,
+.rea-form textarea:focus {
+  outline: none;
+  border-color: var(--line-strong);
+  box-shadow: var(--glow-soft);
+}
+
+.rea-select select {
+  width: 100%;
+  padding-top: 0.4rem;
+  padding-bottom: 0.4rem;
+  font-size: 0.74rem;
+}
+
+.rea-hint {
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: var(--text-dim);
+}
+
+.rea-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 1.1rem 0.8rem;
+  border: 1px dashed var(--line-strong);
+  background: rgba(255, 122, 26, 0.04);
+  color: var(--text);
+  text-align: center;
+  cursor: pointer;
+}
+
+.rea-drop:hover,
+.rea-drop[data-over="true"] {
+  background: rgba(255, 122, 26, 0.12);
+  box-shadow: var(--glow-soft);
+}
+
+.rea-drop-title {
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  color: var(--accent-2);
+}
+
+.rea-drop-sub {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.rea-check {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  font-size: 0.84rem;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.rea-check input {
+  margin-top: 0.2rem;
+  accent-color: var(--accent);
+}
+
+.rea-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.rea-actions .btn-primary {
+  flex: 1;
+  padding: 0.7rem 1rem;
+  letter-spacing: 0.24em;
+}
+
+.rea-note {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.rea-note[data-warn="true"] {
+  color: var(--warn);
+}
+
+/* Report */
+.rea-report-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 1rem 1.2rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.rea-report-body p {
+  margin: 0 0 0.6rem;
+}
+
+.rea-report-body > p:first-child {
+  font-size: 1.05rem;
+  color: var(--accent-3);
+}
+
+.rea-brief-h {
+  margin: 1.1rem 0 0.35rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent-2);
+}
+
+.rea-brief-list {
+  margin: 0 0 0.6rem;
+  padding-left: 1.1rem;
+}
+
+.rea-brief-list li {
+  margin-bottom: 0.25rem;
+}
+
+.rea-brief-list li::marker {
+  color: var(--accent);
+}
+
+.rea-brief-code {
+  margin: 0.3rem 0 0.8rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  background: rgba(8, 3, 1, 0.7);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--accent-3);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.rea-brief-tt,
+.intel-brief-tt {
+  padding: 0 0.25rem;
+  background: rgba(255, 122, 26, 0.1);
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  color: var(--accent-3);
+  overflow-wrap: anywhere;
+}
+
+.rea-link {
+  color: var(--accent-2);
+}
+
+.rea-intro {
+  max-width: 62ch;
+}
+
+.rea-intro .rea-intro-lead {
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.25;
+  color: var(--accent-3);
+}
+
+.rea-files {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 0.85rem;
+  border-top: 1px solid var(--line);
+}
+
+.rea-files[hidden] {
+  display: none;
+}
+
+.rea-tools {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.rea-tools[hidden] {
+  display: none;
+}
+
+/* Follow-ups under the report */
+.rea-followup {
+  margin-top: 1.4rem;
+  padding-top: 0.9rem;
+  border-top: 1px dashed var(--line-strong);
+}
+
+.rea-followup-q {
+  margin: 0 0 0.5rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--accent);
+  font-size: 0.98rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent-3);
+}
+
+.rea-answer > p:first-child {
+  color: var(--accent-3);
+}
+
+.rea-ask {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.6rem 0.85rem;
+  border-top: 1px solid var(--line);
+}
+
+.rea-ask[hidden] {
+  display: none;
+}
+
+.rea-ask input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  background: rgba(14, 6, 2, 0.6);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.rea-ask input:focus {
+  outline: none;
+  border-color: var(--line-strong);
+  box-shadow: var(--glow-soft);
+}
+
+/* Activity log and recent runs */
+.rea-side {
+  display: flex;
+  flex-direction: column;
+}
+
+.rea-log {
+  flex: 1.4;
+  min-height: 8rem;
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-dim);
+}
+
+.rea-cmd {
+  color: var(--accent-3);
+}
+
+.rea-cmd-rea {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.rea-result {
+  color: var(--text-dim);
+}
+
+.rea-dim {
+  color: var(--text-faint);
+}
+
+.rea-recent-head {
+  border-top: 1px solid var(--line);
+}
+
+.rea-recent {
+  flex: 1;
+  min-height: 5rem;
+  list-style: none;
+  margin: 0;
+  padding: 0.4rem;
+  overflow: auto;
+}
+
+.rea-recent .panel-empty {
+  padding: 0.4rem 0.5rem;
+}
+
+.rea-recent-row {
+  display: flex;
+  align-items: stretch;
+  border-left: 2px solid transparent;
+}
+
+.rea-recent-row[data-current="true"] {
+  border-left-color: var(--accent);
+  background: rgba(255, 122, 26, 0.08);
+}
+
+.rea-recent-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.4rem 0.5rem;
+  border: 0;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.rea-recent-open:hover {
+  background: rgba(255, 122, 26, 0.06);
+}
+
+.rea-recent-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+}
+
+.rea-recent-meta {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+.rea-recent-x {
+  padding: 0 0.55rem;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.rea-recent-x:hover {
+  color: var(--accent-2);
+}
+
+/* Narrow: report first, then the form, then activity. */
+@media (max-width: 1180px) {
+  .rea {
+    grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.6fr);
+    grid-template-rows: minmax(0, 1.4fr) minmax(0, 1fr);
+  }
+  .rea-target {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+  .rea-report {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .rea-side {
+    grid-column: 2;
+    grid-row: 2;
+  }
+}
+
+@media (max-width: 960px) {
+  .rea {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+  }
+  .rea-target,
+  .rea-report,
+  .rea-side {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .rea-report {
+    min-height: 60vh;
+    max-height: 85vh;
+  }
+  .rea-side {
+    max-height: 70vh;
+  }
+  .rea-report-body {
+    padding: 0.85rem;
+  }
+}
