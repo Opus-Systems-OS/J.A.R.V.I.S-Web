@@ -34,6 +34,8 @@ export function systemSuffix(profile: Profile): string {
       "Use opus_status for anything about the state of his systems and fleet_usage for spend, rather than guessing.",
       "Use fleet_jobs to find the jobs you dispatched; the HUD announces when one finishes or has a question.",
       "Use briefing for his day (weather, calendar, email, YouTube, WHOOP, Buffer) and set_reminder when he asks to be reminded.",
+      "Use intel_feed for what is happening in the news and natural hazards right now, in the US and the world (the Intel tab's live feeds).",
+      "A message beginning [intel] comes from the Intel tab: its reply is shown there, not spoken, so follow that message's format instead.",
     ].join(" ");
   }
   return [
@@ -67,6 +69,8 @@ export interface JarvisEvents {
   jobs(): Job[];
   /** Every event of the conversation, for other views (the terminal). */
   onEvent?(e: SessionEvent, live: boolean): void;
+  /** A reply in a silent turn (shown, not spoken), with the turn's tag. */
+  onSilentReply?(text: string, tag: string): void;
 }
 
 function load(key: string): string | null {
@@ -93,8 +97,10 @@ export class Jarvis {
   private readonly silent = new Set<string>();
   private readonly answered = new Set<string>();
   private busy = false;
-  /** A terminal command is running: its reply is shown, never spoken. */
+  /** A terminal command or Intel brief is running: its reply is shown, never spoken. */
   private silentTurn = false;
+  /** Who asked for the silent turn ("terminal", "intel"). */
+  private turnTag = "";
 
   constructor(
     private readonly transcript: Transcript,
@@ -144,13 +150,14 @@ export class Jarvis {
    * `attachments`: ids from `/files` (the chat's tray). A message may be
    * files alone; the control plane then supplies the words.
    */
-  async ask(text: string, opts: { silent?: boolean; attachments?: string[] } = {}) {
+  async ask(text: string, opts: { silent?: boolean; tag?: string; attachments?: string[] } = {}) {
     const task = text.trim();
     const attachments = opts.attachments ?? [];
     if (!task && !attachments.length) return;
     const files = attachments.length ? { attachments } : {};
     this.busy = true;
     this.silentTurn = !!opts.silent;
+    this.turnTag = opts.tag ?? "";
     this.ev.onPhase("thinking", task || "looking at the attached files");
     try {
       if (this.sessionId) {
@@ -269,7 +276,10 @@ export class Jarvis {
     switch (r.kind) {
       case "agent_message":
         if (r.id && this.silent.has(r.id)) break;
-        if (this.silentTurn) break;
+        if (this.silentTurn) {
+          if (r.text.trim()) this.ev.onSilentReply?.(r.text, this.turnTag);
+          break;
+        }
         if (r.text.trim()) this.ev.onReply(r.text);
         break;
       case "custom_tool":
@@ -283,6 +293,7 @@ export class Jarvis {
         if (r.stop_reason === "requires_action") break; // our tool answer is on its way
         this.busy = false;
         this.silentTurn = false;
+        this.turnTag = "";
         if (this.sessionId) void this.outputs(this.sessionId, true);
         if (r.stop_reason === "budget_reached") {
           this.ev.onReply("This conversation has reached its budget, sir. I'll start a fresh one next time you ask.");

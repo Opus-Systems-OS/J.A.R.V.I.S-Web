@@ -52,6 +52,14 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
 - **Supply chain:** CI pins every action to a commit SHA, gives
   `packages: write` only to the image job, and fails on `cargo audit` or
   `npm audit --audit-level=high`.
+- **Intel feeds come through here, from a fixed list.** The Intel tab's
+  news wires and hazard feeds (Google News, NPR, BBC, CBS, ABC, Guardian,
+  Al Jazeera, USGS, NASA EONET, CAL FIRE, InciWeb, NWS) are fetched by
+  `jarvis-web`, never the browser, and cached for 5 min. A search
+  only fills the query of fixed hosts (Google News, Wikipedia). Links
+  must be http(s) and text is stripped of markup. Intel is the owner's.
+  Search and Jarvis's briefs cover news and public-figure entries only:
+  public role and record, never a private person's address, phone or family.
 - **No fleet state here.** Sessions, usage and everything Jarvis knows are
   read live from the API.
 
@@ -63,8 +71,10 @@ server/src/lib.rs      app(): /auth, /bff, static page, security headers (CSP + 
 server/src/auth.rs     unlock, cookie, idle lock, rate limits, CSRF header, Sec-Fetch-Site
 server/src/bff.rs      allowlisted passthrough to the API (SSE streams through)
 server/src/honey.rs    honeypot: trap paths, bait .env, canary, bans
+server/src/intel.rs    Intel: news + hazard feeds and search, fetched and normalized here
 server/src/db.rs       SQLite: web_sessions, login_failures, bans, trap_hits, …
 web/src/html.ts        the one Trusted Types policy + the escaping `html` template
+web/src/hud/intel/     the Intel tab: canvas globe, gazetteer, classifier, dossier
 server/src/mic.rs      the one-HUD-listens lease (memory only)
 server/tests/web.rs    contract tests through the real router, API stubbed
 web/                   Vite + TypeScript page (no framework), self-hosted fonts

@@ -7,6 +7,7 @@ export default defineConfig({
     proxy: {
       "/auth": "http://127.0.0.1:8200",
       "/bff": { target: "http://127.0.0.1:8200", ws: false },
+      "/web": "http://127.0.0.1:8200",
       "/healthz": "http://127.0.0.1:8200",
     },
   },

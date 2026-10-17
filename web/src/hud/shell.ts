@@ -79,6 +79,7 @@ const template = (full: boolean) => html`
     </aside>
   </div>
   <div class="view" data-view="Fleet" id="view-fleet" hidden></div>
+  ${full ? html`<div class="view view-intel" data-view="Intel" id="view-intel" hidden></div>` : ""}
   ${full ? html`<div class="view" data-view="Systems" id="view-systems" hidden></div>` : ""}
   <div class="view" data-view="Usage" id="view-usage" hidden></div>
   <div class="view" data-view="Terminal" id="view-terminal" hidden></div>
@@ -175,6 +176,38 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   const fleetView = full ? new FleetView($("#view-fleet")) : new FleetView($("#view-fleet"), []);
   const systemsView = full ? new SystemsView($("#view-systems")) : null;
   const usageView = new UsageView($("#view-usage"), (c) => watch.observe(c), full);
+  // Intel (the owner's) loads its globe and map data only when first opened.
+  let intelView: import("./intel/view").IntelView | null = null;
+  let intelLoading: Promise<void> | null = null;
+  const showIntel = () => {
+    intelLoading ??= import("./intel/view").then(({ IntelView }) => {
+      intelView = new IntelView($("#view-intel"), {
+        analyze: (prompt) =>
+          new Promise<string>((resolve) => {
+            intelTurn?.done(intelTurn.parts.join("\n\n"));
+            intelTurn = { parts: [], done: resolve };
+            speaker.stop();
+            void jarvis.ask(prompt, { silent: true, tag: "intel" });
+          }),
+        speak: (line) => {
+          if (!lease.held) return;
+          lastReplyAsked = false;
+          speaker.say(line);
+        },
+      });
+    });
+    void intelLoading.then(() => {
+      if (current === "Intel") intelView?.show();
+    });
+  };
+  /** The Intel brief being written: the silent turn's replies, until idle. */
+  let intelTurn: { parts: string[]; done: (text: string) => void } | null = null;
+  const finishIntel = (failed: boolean) => {
+    if (!intelTurn || (!failed && !intelTurn.parts.length)) return;
+    const turn = intelTurn;
+    intelTurn = null;
+    turn.done(failed ? "" : turn.parts.join("\n\n"));
+  };
   let current = "HUD";
   const openPanel = (tab: string) => {
     root.querySelectorAll<HTMLButtonElement>(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.tab === tab)));
@@ -183,7 +216,9 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     if (current === "Fleet") fleetView.hide();
     if (current === "Systems") systemsView?.hide();
     if (current === "Usage") usageView.hide();
+    if (current === "Intel") intelView?.hide();
     current = tab;
+    if (tab === "Intel" && full) showIntel();
     if (tab === "Fleet") fleetView.show();
     if (tab === "Systems") systemsView?.show();
     if (tab === "Usage") usageView.show();
@@ -296,6 +331,8 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       if (p === "thinking" && detail) sub.textContent = `“${detail}”`;
       if (p === "error" && detail) sub.textContent = detail;
       if (p === "idle" && !speaker.speaking) sub.textContent = "";
+      if (p === "idle") finishIntel(false);
+      if (p === "error") finishIntel(true);
       renderOrb();
     },
     onReply: (text) => {
@@ -308,6 +345,9 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     },
     openPanel,
     onEvent: (e) => terminal.feed(e),
+    onSilentReply: (text, tag) => {
+      if (tag === "intel" && intelTurn) intelTurn.parts.push(text);
+    },
     onBillingError: () => {
       if (!full) return; // the ledger is the owner's; Jarvis already said so
       watch.markExhausted();
@@ -669,6 +709,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       jarvis.detach();
       fleetView.dispose();
       systemsView?.dispose();
+      intelView?.dispose();
       usageView.dispose();
       watch.stop();
     },

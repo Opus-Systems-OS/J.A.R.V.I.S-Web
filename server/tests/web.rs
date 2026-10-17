@@ -1289,3 +1289,31 @@ async fn locking_every_device_ends_every_session_of_that_profile_only() {
         StatusCode::OK
     );
 }
+
+#[tokio::test]
+async fn intel_is_the_owners_and_needs_an_unlock() {
+    let h = harness().await;
+    let powers = unlock_as(&h, "powers", POWERS_PASSWORD).await;
+    for path in ["/web/intel/feed", "/web/intel/search?q=fire"] {
+        assert_eq!(
+            send(&h, bff(Method::GET, path, None, None)).await.status,
+            StatusCode::UNAUTHORIZED,
+            "{path}"
+        );
+        assert_eq!(
+            send(&h, bff(Method::GET, path, Some(&powers), None))
+                .await
+                .status,
+            StatusCode::FORBIDDEN,
+            "{path}"
+        );
+    }
+    // A bad query is refused before anything leaves this box.
+    let walker = unlock(&h).await;
+    let r = send(
+        &h,
+        bff(Method::GET, "/web/intel/search?q=%20", Some(&walker), None),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+}
