@@ -283,6 +283,66 @@
   display: none;
 }
 
+.rea-tools {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.rea-tools[hidden] {
+  display: none;
+}
+
+/* Follow-ups under the report */
+.rea-followup {
+  margin-top: 1.4rem;
+  padding-top: 0.9rem;
+  border-top: 1px dashed var(--line-strong);
+}
+
+.rea-followup-q {
+  margin: 0 0 0.5rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--accent);
+  font-size: 0.98rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent-3);
+}
+
+.rea-answer > p:first-child {
+  color: var(--accent-3);
+}
+
+.rea-ask {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.6rem 0.85rem;
+  border-top: 1px solid var(--line);
+}
+
+.rea-ask[hidden] {
+  display: none;
+}
+
+.rea-ask input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  background: rgba(14, 6, 2, 0.6);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.rea-ask input:focus {
+  outline: none;
+  border-color: var(--line-strong);
+  box-shadow: var(--glow-soft);
+}
+
 /* Activity log and recent runs */
 .rea-side {
   display: flex;

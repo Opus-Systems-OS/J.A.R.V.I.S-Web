@@ -15,6 +15,7 @@ import { ago } from "../fleet";
 import type { OutputFile, SessionEvent } from "../transcript";
 import {
   doctorTask,
+  followupTask,
   forget,
   isReaCommand,
   isRunOutput,
@@ -22,8 +23,10 @@ import {
   problem,
   reaTask,
   remember,
+  reportFilename,
   runId,
   targetLabel,
+  toMarkdown,
   workflow,
   WORKFLOWS,
   type Run,
@@ -35,6 +38,7 @@ import {
 const RUN_TIMEOUT_MS = 20 * 60_000;
 const MAX_LOG_LINES = 400;
 const MAX_RESULT = 4_000;
+const NOTE = "Runs in Jarvis's cloud sandbox with REA, static analysis only, on his conversation's budget.";
 
 export interface ReverseHost {
   /** Ask Jarvis on the conversation, silently; resolves with his reply ("" on failure). */
@@ -96,13 +100,22 @@ const SKELETON = html`
           <button class="btn-primary" id="rea-run" type="submit">Reverse engineer</button>
           <button class="btn-ghost" id="rea-stop" type="button" hidden>Stop</button>
         </div>
-        <p class="rea-note" id="rea-note">Runs in Jarvis's cloud sandbox with REA, static analysis only, on his conversation's budget.</p>
+        <p class="rea-note" id="rea-note">${NOTE}</p>
       </form>
     </section>
     <section class="panel rea-report">
       <header class="panel-head"><span class="panel-title" id="rea-title">Report</span><span class="panel-tag" id="rea-tag">standby</span></header>
+      <div class="rea-tools" id="rea-tools" hidden>
+        <button class="btn-ghost btn-tiny" id="rea-copy" type="button" title="Copy the report and its follow-ups as Markdown">Copy</button>
+        <button class="btn-ghost btn-tiny" id="rea-download" type="button" title="Download the report and its follow-ups as a Markdown file">Download .md</button>
+        <button class="btn-ghost btn-tiny" id="rea-again" type="button" title="Investigate the same target with the same question again">Run again</button>
+      </div>
       <div class="rea-report-body" id="rea-report"></div>
       <footer class="rea-files" id="rea-files-out" hidden></footer>
+      <form class="rea-ask" id="rea-ask" novalidate hidden>
+        <input id="rea-ask-input" autocomplete="off" spellcheck="true" maxlength="1000" placeholder="Ask a follow-up about this target" aria-label="Follow-up question" />
+        <button class="btn-primary btn-small" id="rea-ask-send" type="submit">Ask</button>
+      </form>
     </section>
     <section class="panel rea-side">
       <header class="panel-head"><span class="panel-title">Activity</span><span class="panel-tag" id="rea-activity-tag">idle</span></header>
@@ -147,7 +160,7 @@ export class ReverseView {
   private files: string[] = [];
   private history: Run[] = loadHistory();
   /** The run in flight. */
-  private running: { id: string; label: string; doctor: boolean } | null = null;
+  private running: { id: string; kind: "run" | "doctor" | "followup" } | null = null;
   private stopped = false;
   private readonly bashIds = new Set<string>();
   private shown: string | null = null;
@@ -205,6 +218,13 @@ export class ReverseView {
       this.host.stop();
     };
     this.$<HTMLButtonElement>("#rea-doctor").onclick = () => void this.doctor();
+    this.$<HTMLButtonElement>("#rea-copy").onclick = () => void this.copy();
+    this.$<HTMLButtonElement>("#rea-download").onclick = () => this.download();
+    this.$<HTMLButtonElement>("#rea-again").onclick = () => void this.again();
+    this.$<HTMLFormElement>("#rea-ask").onsubmit = (e) => {
+      e.preventDefault();
+      void this.followup();
+    };
 
     this.showIntro();
     this.renderRecent();
@@ -300,36 +320,40 @@ export class ReverseView {
       this.note("The upload failed, so there is nothing to investigate. Try again.", true);
       return;
     }
-    await this.execute(spec.id, targetLabel(spec), reaTask(spec), ids, { workflow: spec.workflow, question: spec.question.trim(), doctor: false });
+    const { id, ...asked } = spec;
+    await this.investigate(id, targetLabel(spec), reaTask(spec), ids, asked);
   }
 
   private async doctor() {
     if (this.running) return;
-    await this.execute(runId(), "Sandbox check", doctorTask(), [], { workflow: "auto", question: "Is REA ready?", doctor: true });
+    await this.investigate(runId(), "Sandbox check", doctorTask(), [], null);
   }
 
-  private async execute(id: string, label: string, prompt: string, attachments: string[], meta: { workflow: Run["workflow"]; question: string; doctor: boolean }) {
-    this.running = { id, label, doctor: meta.doctor };
+  /** The shown run again, as a new run: same target (uploads re-attached), same question. */
+  private async again() {
+    const run = this.current();
+    if (this.running || !run) return;
+    if (!run.spec) {
+      await this.doctor();
+      return;
+    }
+    const id = runId();
+    await this.investigate(id, run.label, reaTask({ ...run.spec, id }), run.attachments ?? [], run.spec);
+  }
+
+  /** The run being shown, as history now has it. */
+  private current(): Run | null {
+    return this.history.find((r) => r.id === this.shown) ?? null;
+  }
+
+  /** One silent turn with the busy state, the timeout and Stop; resolves with the reply ("" if none). */
+  private async turn(prompt: string, attachments: string[]): Promise<string> {
     this.stopped = false;
-    this.shown = id;
     this.bashIds.clear();
     this.setBusy(true);
-    this.$("#rea-title").textContent = label;
-    this.$("#rea-tag").textContent = "investigating";
-    this.$("#rea-files-out").hidden = true;
-    const out = this.$("#rea-report");
-    out.replaceChildren();
-    const status = el("div", "intel-analyzing");
-    status.append(el("span", "intel-analyzing-bars"), el("span", "", meta.doctor ? "Checking REA in the sandbox" : "Jarvis is investigating. Several minutes for a large target"));
-    out.append(status);
-    this.$("#rea-log").replaceChildren();
-    this.logLine("rea-dim", `run ${id} · ${label}`);
-    this.note(meta.doctor ? "Checking the sandbox…" : "Running. Stop interrupts Jarvis; the report stays empty.");
-
-    let text = "";
     let timer = 0;
     try {
-      text = await Promise.race([
+      return await Promise.race([
         this.host.investigate(prompt, attachments),
         new Promise<string>((resolve) => (timer = window.setTimeout(() => resolve(""), RUN_TIMEOUT_MS))),
       ]);
@@ -338,27 +362,136 @@ export class ReverseView {
       this.running = null;
       this.setBusy(false);
     }
+  }
 
+  private analyzing(text: string): HTMLElement {
+    const status = el("div", "intel-analyzing");
+    status.append(el("span", "intel-analyzing-bars"), el("span", "", text));
+    return status;
+  }
+
+  /** Nothing came back: say why where the reply would have gone. */
+  private failed(where: HTMLElement, what: string) {
+    where.replaceChildren(
+      el("p", "rea-hint", this.stopped ? "Stopped. Whatever Jarvis found so far is in the transcript." : `No ${what} came back. See the transcript and the activity log, then try again.`),
+    );
+    this.note(this.stopped ? "Stopped." : `No ${what} came back.`, !this.stopped);
+  }
+
+  /** `asked`: the form behind the run, or null for the sandbox check. */
+  private async investigate(id: string, label: string, prompt: string, attachments: string[], asked: Omit<RunSpec, "id"> | null) {
+    this.running = { id, kind: asked ? "run" : "doctor" };
+    this.shown = id;
+    this.$("#rea-title").textContent = label;
+    this.$("#rea-tag").textContent = "investigating";
+    this.$("#rea-files-out").hidden = true;
+    this.$("#rea-tools").hidden = true;
+    this.$("#rea-ask").hidden = true;
+    const out = this.$("#rea-report");
+    out.replaceChildren(this.analyzing(asked ? "Jarvis is investigating. Several minutes for a large target" : "Checking REA in the sandbox"));
+    this.$("#rea-log").replaceChildren();
+    this.logLine("rea-dim", `run ${id} · ${label}`);
+    this.note(asked ? "Running. Stop interrupts Jarvis; the report stays empty." : "Checking the sandbox…");
+    this.renderRecent();
+
+    const text = await this.turn(prompt, attachments);
     if (!text.trim()) {
+      if (this.shown !== id) return;
       this.$("#rea-tag").textContent = this.stopped ? "stopped" : "no report";
-      out.replaceChildren(
-        el("p", "rea-hint", this.stopped ? "Stopped. Whatever Jarvis found so far is in the transcript." : "No report came back. See the transcript and the activity log, then try again."),
-      );
-      this.note(this.stopped ? "Stopped." : "No report came back.", !this.stopped);
+      this.failed(out, "report");
       return;
     }
-    const run: Run = { id, label, workflow: meta.workflow, question: meta.question, at: new Date().toISOString(), report: text, session: this.host.sessionId() };
+    const run: Run = {
+      id,
+      label,
+      workflow: asked?.workflow ?? "auto",
+      question: asked ? asked.question.trim() : "Is REA ready?",
+      at: new Date().toISOString(),
+      report: text,
+      session: this.host.sessionId(),
+      ...(asked ? { spec: asked } : {}),
+      ...(attachments.length ? { attachments } : {}),
+    };
     this.history = remember(run, this.history);
-    this.renderRecent();
-    this.note("Runs in Jarvis's cloud sandbox with REA, static analysis only, on his conversation's budget.");
+    this.note(NOTE);
     if (this.shown === id) this.showRun(run);
+    else this.renderRecent();
     const lead = leadLine(text);
     if (lead && this.visible) this.host.speak(lead);
+  }
+
+  /** A follow-up question on the shown run; the answer is kept with it. */
+  private async followup() {
+    const run = this.current();
+    const input = this.$<HTMLInputElement>("#rea-ask-input");
+    const q = input.value.trim();
+    if (this.running || !run || !q) return;
+    input.value = "";
+    // Same conversation: the sandbox still has the work. Otherwise the
+    // target comes again (uploads re-attached) with the report as context.
+    const sameSession = !!run.session && run.session === this.host.sessionId();
+    this.running = { id: run.id, kind: "followup" };
+    const block = this.followupBlock(q, null);
+    const answer = block.querySelector(".rea-answer") as HTMLElement;
+    answer.replaceChildren(this.analyzing("Jarvis is looking into it"));
+    const out = this.$("#rea-report");
+    out.append(block);
+    block.scrollIntoView({ block: "start", behavior: "smooth" });
+    this.$("#rea-log").replaceChildren();
+    this.logLine("rea-dim", `follow-up · ${run.label}`);
+    this.note(sameSession ? "Asking. Stop interrupts Jarvis." : "Asking in a new conversation: Jarvis fetches the target again first.");
+
+    const text = await this.turn(followupTask(run, q, sameSession), sameSession ? [] : (run.attachments ?? []));
+    if (!text.trim()) {
+      if (answer.isConnected) this.failed(answer, "answer");
+      return;
+    }
+    const latest = this.history.find((r) => r.id === run.id) ?? run;
+    this.history = remember({ ...latest, followups: [...(latest.followups ?? []), { q, a: text, at: new Date().toISOString() }] }, this.history);
+    this.renderRecent();
+    this.note(NOTE);
+    if (answer.isConnected) renderBrief(answer, text, "rea");
+    const lead = leadLine(text);
+    if (lead && this.visible) this.host.speak(lead);
+  }
+
+  /** A follow-up as it sits under the report: the question, then the answer. */
+  private followupBlock(q: string, a: string | null): HTMLElement {
+    const box = el("section", "rea-followup");
+    box.append(el("h4", "rea-followup-q", q));
+    const answer = el("div", "rea-answer");
+    if (a) renderBrief(answer, a, "rea");
+    box.append(answer);
+    return box;
+  }
+
+  private async copy() {
+    const run = this.current();
+    if (!run) return;
+    try {
+      await navigator.clipboard.writeText(toMarkdown(run));
+      this.note("Report copied as Markdown.");
+    } catch {
+      this.note("The browser would not copy. Use Download .md instead.", true);
+    }
+  }
+
+  private download() {
+    const run = this.current();
+    if (!run) return;
+    const url = URL.createObjectURL(new Blob([toMarkdown(run)], { type: "text/markdown;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = reportFilename(run);
+    a.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
   }
 
   private setBusy(busy: boolean) {
     this.$<HTMLButtonElement>("#rea-run").disabled = busy;
     this.$<HTMLButtonElement>("#rea-doctor").disabled = busy;
+    this.$<HTMLButtonElement>("#rea-again").disabled = busy;
+    this.$<HTMLButtonElement>("#rea-ask-send").disabled = busy;
     this.$<HTMLButtonElement>("#rea-stop").hidden = !busy;
     this.$("#rea-activity-tag").textContent = busy ? "live" : "idle";
   }
@@ -366,8 +499,12 @@ export class ReverseView {
   // ---- report -----------------------------------------------------------------
 
   private showIntro() {
+    this.shown = null;
     this.$("#rea-title").textContent = "Report";
     this.$("#rea-tag").textContent = "standby";
+    this.$("#rea-tools").hidden = true;
+    this.$("#rea-ask").hidden = true;
+    this.$("#rea-files-out").hidden = true;
     setHtml(this.$("#rea-report"), INTRO);
   }
 
@@ -377,7 +514,11 @@ export class ReverseView {
     this.$("#rea-tag").textContent = `${workflow(run.workflow).label} · ${ago(run.at)}`;
     const out = this.$("#rea-report");
     renderBrief(out, run.report, "rea");
+    for (const f of run.followups ?? []) out.append(this.followupBlock(f.q, f.a));
     out.scrollTop = 0;
+    this.$("#rea-tools").hidden = false;
+    this.$<HTMLButtonElement>("#rea-again").title = run.spec ? "Investigate the same target with the same question again" : "Check the sandbox again";
+    this.$("#rea-ask").hidden = false;
     this.renderRecent();
     void this.renderFiles(run);
   }

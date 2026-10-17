@@ -152,6 +152,30 @@ function targetLine(spec: RunSpec): string {
   );
 }
 
+/** How to get REA running in the sandbox (Node 24.15+, the CLI). */
+const SETUP = [
+  "Setup: REA is the `rea-agents` npm package (github.com/morluto/rea). It needs Node 24.15 or newer here: if `node -v` is older, download",
+  "the official linux-x64 tarball from https://nodejs.org/dist/latest-v24.x/ into ~/.rea/node and put its bin first on PATH. Then, if",
+  `\`rea --version\` fails, \`npm install -g rea-agents@${REA_VERSION}\` (or later), and call it as \`rea\`. \`rea <command> --help\` shows a command's options.`,
+];
+
+/** What every REA turn must keep to. */
+function rules(id: string, deep: boolean): string[] {
+  return [
+    "Rules:",
+    "- Static analysis only: never execute, install or launch the target, and never use capture-process, Frida, GDB, Rizin debugging or LLDB.",
+    "- Keep output small, your budget is shared with the conversation: check `--token-count` before printing a result, cut it down with",
+    "  `--filter-output` or `rea inspect-analysis-view`, or save `--format json` to a file under $W and read it with jq. Never cat a large result.",
+    "- Save the evidence worth keeping (at most five files, each under 20 MB) as /mnt/session/outputs/rea-" + id + "-<name>.json so they can be downloaded.",
+    deep
+      ? "- Depth: you may install a heavier engine when the question needs it (Ghidra with a JDK 21 for native pseudocode via `--provider ghidra`, JADX for APK classes, binutils for objdump). Say what you installed."
+      : "- Depth: do not install Ghidra, JADX, a JDK or other heavy engines. If the question needs pseudocode or decompiled classes, say so under Unknowns and limits.",
+    "- Explain how it works so Mr. Walker can understand it or build his own version. Do not help bypass licensing, DRM, anti-cheat or",
+    "  copy protection, and if you find embedded secrets (API keys, tokens, passwords), say that they exist and where, never their values.",
+    "- If REA cannot install or a command fails, report the error and what you could still establish instead of guessing.",
+  ];
+}
+
 /** The `[rea]` message: setup, the plan, the rules and the report's shape. */
 export function reaTask(spec: RunSpec): string {
   const w = workflow(spec.workflow);
@@ -160,26 +184,14 @@ export function reaTask(spec: RunSpec): string {
     "[rea] Reverse-engineer this for the Reverse panel with REA. Your reply is shown on screen, not spoken, so ignore the short",
     "spoken-reply rules and follow this message.",
     "",
-    "Setup: REA is the `rea-agents` npm package (github.com/morluto/rea). It needs Node 24.15 or newer here: if `node -v` is older, download",
-    "the official linux-x64 tarball from https://nodejs.org/dist/latest-v24.x/ into ~/.rea/node and put its bin first on PATH. Then",
-    `\`npm install -g rea-agents@${REA_VERSION}\` (or later) once, and call it as \`rea\`. \`rea <command> --help\` shows a command's options.`,
+    ...SETUP,
     `Work in W=/tmp/rea/${spec.id} (mkdir -p it).`,
     "",
     targetLine(spec),
     `Workflow: ${w.label}. ${w.plan}`,
     `Question: ${question}`,
     "",
-    "Rules:",
-    "- Static analysis only: never execute, install or launch the target, and never use capture-process, Frida, GDB, Rizin debugging or LLDB.",
-    "- Keep output small, your budget is shared with the conversation: check `--token-count` before printing a result, cut it down with",
-    "  `--filter-output` or `rea inspect-analysis-view`, or save `--format json` to a file under $W and read it with jq. Never cat a large result.",
-    "- Save the evidence worth keeping (at most five files, each under 20 MB) as /mnt/session/outputs/rea-" + spec.id + "-<name>.json so they can be downloaded.",
-    spec.deep
-      ? "- Depth: you may install a heavier engine when the question needs it (Ghidra with a JDK 21 for native pseudocode via `--provider ghidra`, JADX for APK classes, binutils for objdump). Say what you installed."
-      : "- Depth: do not install Ghidra, JADX, a JDK or other heavy engines. If the question needs pseudocode or decompiled classes, say so under Unknowns and limits.",
-    "- Explain how it works so Mr. Walker can understand it or build his own version. Do not help bypass licensing, DRM, anti-cheat or",
-    "  copy protection, and if you find embedded secrets (API keys, tokens, passwords), say that they exist and where, never their values.",
-    "- If REA cannot install or a command fails, report the error and what you could still establish instead of guessing.",
+    ...rules(spec.id, spec.deep),
     "",
     "Reply in plain markdown (# headings, - bullets, fenced code where code helps, no tables), beginning with one plain sentence that answers",
     "the question (that line alone is read aloud). Then these sections:",
@@ -190,6 +202,70 @@ export function reaTask(spec: RunSpec): string {
     "# Build your own — how to implement the same behavior, with a short code sketch (only when the question is about a feature).",
     "# Commands — the REA commands you ran, in one fenced block.",
   ].join("\n");
+}
+
+/** How much of the earlier report a follow-up in a new conversation carries. */
+const MAX_CONTEXT = 8_000;
+
+/**
+ * A follow-up question on a finished run. In the run's own conversation the
+ * sandbox still has its work and Jarvis remembers the report; in a new one
+ * he gets the target again (uploads re-attached) and the report as context.
+ */
+export function followupTask(run: Run, question: string, sameSession: boolean): string {
+  const head = [
+    `[rea] Follow-up on Reverse run ${run.id} (${run.label}) for the Reverse panel. Your reply is shown on screen, not spoken, so ignore`,
+    "the short spoken-reply rules and follow this message.",
+    `Question: ${question.trim()}`,
+    "",
+  ];
+  let context: string[];
+  if (sameSession) {
+    context = [`Your work for this run is in W=/tmp/rea/${run.id} and your report is earlier in this conversation: build on both, with REA as before.`];
+  } else {
+    const report = run.report.length > MAX_CONTEXT ? `${run.report.slice(0, MAX_CONTEXT)}\n… (report cut short)` : run.report;
+    context = [
+      "This is a new conversation, so your earlier sandbox work is gone. If the question needs the target again, fetch it as before into",
+      `W=/tmp/rea/${run.id} (mkdir -p it).`,
+      ...SETUP,
+      run.spec ? targetLine({ ...run.spec, id: run.id }) : `Target: ${run.label}`,
+      "Your earlier report, for context:",
+      "<<<",
+      report,
+      ">>>",
+    ];
+  }
+  return [
+    ...head,
+    ...context,
+    "",
+    ...rules(run.id, run.spec?.deep ?? false),
+    "",
+    "Reply in plain markdown (# headings, - bullets, fenced code where code helps, no tables), beginning with one plain sentence that answers",
+    "the question (that line alone is read aloud), then only the sections the answer needs, and # Commands in one fenced block if you ran any.",
+  ].join("\n");
+}
+
+/** The run as one Markdown document: what was asked, the report, the follow-ups. */
+export function toMarkdown(run: Run): string {
+  const parts = [
+    `# ${run.label}`,
+    "",
+    `- Workflow: ${workflow(run.workflow).label}`,
+    `- Investigated: ${run.at}`,
+    `- Run: ${run.id}`,
+    ...(run.question ? [`- Question: ${run.question}`] : []),
+    "",
+    run.report.trim(),
+  ];
+  for (const f of run.followups ?? []) parts.push("", "---", "", `## Follow-up: ${f.q}`, "", f.a.trim());
+  return `${parts.join("\n")}\n`;
+}
+
+/** A filename for the downloaded report. */
+export function reportFilename(run: Run): string {
+  const slug = run.label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "report";
+  return `rea-${slug}-${run.id}.md`;
 }
 
 /** The sandbox health check: REA's own readiness report, nothing analyzed. */
@@ -213,6 +289,12 @@ export const isRunOutput = (filename: string, id: string): boolean => filename.s
 
 // ---- history (this browser only: a convenience, not a record) ---------------
 
+export interface Followup {
+  q: string;
+  a: string;
+  at: string;
+}
+
 export interface Run {
   id: string;
   label: string;
@@ -222,11 +304,18 @@ export interface Run {
   report: string;
   /** The session the run's evidence files belong to. */
   session: string | null;
+  /** What the form asked, to run it again or re-fetch the target (absent on a sandbox check). */
+  spec?: Omit<RunSpec, "id">;
+  /** File ids of the uploads, re-attached to run again or follow up elsewhere. */
+  attachments?: string[];
+  followups?: Followup[];
 }
 
 const HISTORY_KEY = "jarvis.rea.history";
 const MAX_RUNS = 12;
 const MAX_REPORT = 60_000;
+const MAX_FOLLOWUPS = 10;
+const MAX_ANSWER = 20_000;
 
 export function loadHistory(): Run[] {
   try {
@@ -240,7 +329,12 @@ export function loadHistory(): Run[] {
 
 /** Newest first, capped; returns what is now kept. */
 export function remember(run: Run, history: Run[]): Run[] {
-  const kept = [{ ...run, report: run.report.slice(0, MAX_REPORT) }, ...history.filter((r) => r.id !== run.id)].slice(0, MAX_RUNS);
+  const trimmed: Run = {
+    ...run,
+    report: run.report.slice(0, MAX_REPORT),
+    ...(run.followups ? { followups: run.followups.slice(-MAX_FOLLOWUPS).map((f) => ({ ...f, a: f.a.slice(0, MAX_ANSWER) })) } : {}),
+  };
+  const kept = [trimmed, ...history.filter((r) => r.id !== run.id)].slice(0, MAX_RUNS);
   try {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(kept));
   } catch {
