@@ -1,6 +1,5 @@
 // The Intel globe: an orthographic Earth drawn on a canvas in the HUD's
-// orange: atmosphere, graticule, lit coastlines and US state lines, a
-// scan line that crosses the surface (lighting nodes as it passes), and
+// orange: atmosphere, graticule, lit coastlines and US state lines, and
 // one pulsing node per place in the feed. Drag to turn,
 // wheel or pinch to zoom; it drifts on its own when left alone and flies
 // to whatever is selected. Map data is bundled (world-atlas, us-atlas), so
@@ -38,13 +37,6 @@ const LAND = feature(world, world.objects.land);
 const BORDERS = mesh(world, world.objects.countries, (a, b) => a !== b);
 const STATE_LINES = mesh(states, states.objects.states, (a, b) => a !== b);
 const GRATICULE = geoGraticule10();
-
-/** One pass of the scan across the visible side, then a rest. */
-const SCAN_MS = 5200;
-const SCAN_REST_MS = 1800;
-/** Degrees of trail behind the scan line, and how far it lights nodes. */
-const SCAN_TRAIL = 16;
-const SCAN_LIT = 10;
 
 const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
@@ -327,9 +319,6 @@ export class Globe {
     stroke(BORDERS, `rgba(255, 150, 60, ${0.35 * dim})`, 0.6);
     stroke(STATE_LINES, `rgba(255, 178, 92, ${0.22 * dim})`, 0.5);
 
-    const scan = this.scanLon(t);
-    if (scan !== null) this.drawScan(scan, dim);
-
     // Rim.
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
@@ -341,49 +330,8 @@ export class Globe {
     ctx.shadowBlur = 0;
     this.ticks(cx, cy, r * 1.1);
 
-    this.drawNodes(t, scan);
+    this.drawNodes(t);
     this.readout(w, h);
-  }
-
-  /**
-   * The scan's longitude now, or null while it rests. It crosses the side
-   * facing the viewer from west to east, whatever way the globe is turned.
-   */
-  private scanLon(t: number): number | null {
-    const k = (t % (SCAN_MS + SCAN_REST_MS)) / SCAN_MS;
-    if (k > 1) return null;
-    return -this.rotation[0] - 100 + k * 200;
-  }
-
-  /** A line of longitude drawn on the sphere, with a fading trail behind it. */
-  private drawScan(lon: number, dim: number) {
-    const ctx = this.ctx;
-    const meridian = (l: number) => {
-      const coordinates: [number, number][] = [];
-      for (let lat = -89; lat <= 89; lat += 3) coordinates.push([l, lat]);
-      return { type: "LineString" as const, coordinates };
-    };
-    ctx.lineCap = "round";
-    // Wide enough that a degree's lines touch where they are farthest apart
-    // (facing the viewer): one soft band, not stripes.
-    const band = Math.max(3, (this.projection.scale() * Math.PI) / 180 + 1.5);
-    for (let i = SCAN_TRAIL; i >= 1; i--) {
-      const fade = 1 - i / SCAN_TRAIL;
-      ctx.beginPath();
-      this.path(meridian(lon - i));
-      ctx.strokeStyle = `rgba(255, 150, 60, ${0.18 * fade * fade * dim})`;
-      ctx.lineWidth = band;
-      ctx.stroke();
-    }
-    ctx.beginPath();
-    this.path(meridian(lon));
-    ctx.strokeStyle = `rgba(255, 226, 190, ${0.9 * dim})`;
-    ctx.lineWidth = 1.4;
-    ctx.shadowColor = "rgba(255, 150, 60, 1)";
-    ctx.shadowBlur = 12;
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-    ctx.lineCap = "butt";
   }
 
   private ticks(cx: number, cy: number, r: number) {
@@ -400,7 +348,7 @@ export class Globe {
     ctx.stroke();
   }
 
-  private drawNodes(t: number, scan: number | null) {
+  private drawNodes(t: number) {
     const ctx = this.ctx;
     const centre: [number, number] = [-this.rotation[0], -this.rotation[1]];
     const out: Projected[] = [];
@@ -433,23 +381,6 @@ export class Globe {
       ctx.strokeStyle = hexA(node.color, 0.7 * (1 - phase));
       ctx.lineWidth = 1.2;
       ctx.stroke();
-      // Lit by the scan: a flare that fades as the line moves on.
-      const behind = scan === null ? Infinity : (((scan - node.lon) % 360) + 360) % 360;
-      if (behind < SCAN_LIT) {
-        const lit = 1 - behind / SCAN_LIT;
-        ctx.beginPath();
-        ctx.arc(x, y, r * (1.2 + (1 - lit) * 1.8), 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(255, 236, 210, ${0.85 * lit})`;
-        ctx.lineWidth = 1.6;
-        ctx.stroke();
-        const flare = ctx.createRadialGradient(x, y, 0, x, y, r * 3.2);
-        flare.addColorStop(0, `rgba(255, 240, 220, ${0.5 * lit})`);
-        flare.addColorStop(1, "rgba(255, 240, 220, 0)");
-        ctx.fillStyle = flare;
-        ctx.beginPath();
-        ctx.arc(x, y, r * 3.2, 0, Math.PI * 2);
-        ctx.fill();
-      }
       // Core.
       ctx.beginPath();
       ctx.arc(x, y, r * 0.55, 0, Math.PI * 2);
