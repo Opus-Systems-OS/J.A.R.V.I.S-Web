@@ -8,14 +8,13 @@
 // address the honeypot banned since the last visit is mentioned last.
 
 import { get, web, webGet, type Profile } from "../api";
-import { briefingLines, type Briefing } from "./briefing";
+import { briefingLines, withLocalWeather, type Briefing } from "./briefing";
 import { creditLine, type Credits } from "./credits";
+import { freshWeather, here, localZone } from "./location";
 import { compactOps } from "./tools";
 
-const TZ = "America/Los_Angeles";
-
-export function salutation(now = new Date(), name = "Mr. Walker"): string {
-  const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "numeric", hour12: false }).format(now));
+export function salutation(now = new Date(), name = "Mr. Walker", tz = localZone()): string {
+  const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: false }).format(now));
   if (hour < 5) return `Burning the midnight oil, ${name}`;
   if (hour < 12) return `Good morning, ${name}`;
   if (hour < 18) return `Good afternoon, ${name}`;
@@ -56,9 +55,17 @@ export function defensesLine(bans: BanRow[], since: string | null): string | nul
   return `The honeypot has banned ${say(fresh)} ${fresh === 1 ? "address" : "addresses"} since your last visit; they're under Systems, Defenses.`;
 }
 
-export async function greeting(profile: Profile): Promise<string> {
-  const visit = await web<{ previous: string | null }>("visit", {}).catch(() => ({ previous: null }));
-  if (!profile.full) return `${salutation(new Date(), profile.name)}. What can I do for you?`;
+/** When where he is isn't known: ask, once a greeting. */
+export const ASK_WHERE = "I don't know where you are yet; tell me your city, or allow location in the browser, and I'll keep the weather and times local.";
+
+/** `located`: the unlock's location lookup, settled (or given up on) first. */
+export async function greeting(profile: Profile, located: Promise<unknown> = Promise.resolve()): Promise<string> {
+  const [visit] = await Promise.all([
+    web<{ previous: string | null }>("visit", {}).catch(() => ({ previous: null })),
+    located.catch(() => undefined),
+  ]);
+  const ask = here() ? [] : [ASK_WHERE];
+  if (!profile.full) return [`${salutation(new Date(), profile.name)}.`, ...ask, "What can I do for you?"].join(" ");
   const since = visit.previous ? `?since=${encodeURIComponent(visit.previous)}` : "";
   const [ops, rig, credits, briefing, security] = await Promise.allSettled([
     get<Record<string, unknown>>("ops"),
@@ -69,8 +76,10 @@ export async function greeting(profile: Profile): Promise<string> {
   ]);
   const parts = [`${salutation()}.`];
   // No briefing (the key lacks sources:read, or the API is older): the
-  // greeting is the systems report it always was.
-  if (briefing.status === "fulfilled") parts.push(...briefingLines(briefing.value));
+  // greeting is the weather where he is and the systems report.
+  const day: Briefing = briefing.status === "fulfilled" ? briefing.value : { generated_at: "", since: null, sources: [] };
+  parts.push(...briefingLines(withLocalWeather(day, freshWeather())));
+  parts.push(...ask);
   parts.push(ops.status === "fulfilled" ? systemsLine(compactOps(ops.value)) : "I can't reach the operations feed at the moment.");
   if (rig.status === "fulfilled" && rig.value.online) parts.push("The rig is up, if you need local models.");
   const warning = credits.status === "fulfilled" ? creditLine(credits.value) : null;

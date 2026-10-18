@@ -9,16 +9,25 @@
 
 import { ApiError, get, post, type Profile } from "../api";
 import type { Job } from "./jobs";
+import { whereLine } from "./location";
 import { runTool, toolsFor } from "./tools";
 import type { OutputFile, Rendered, SessionEvent, Transcript } from "./transcript";
 
 /** Where this browser keeps a profile's bookmark. Mr. Walker's keys are the
  * ones from before profiles, so his conversation carries on. */
-const storageKey = (profile: Profile, what: "session" | "model") =>
+const storageKey = (profile: Profile, what: "session" | "model" | "where") =>
   profile.full ? `jarvis.${what}` : `jarvis.${profile.id}.${what}`;
 
-/** The web client's personality and context, appended to the agent's prompt. */
-export function systemSuffix(profile: Profile): string {
+/** Marks the line that tells a running conversation he has moved. */
+export const WHERE_TAG = "[location]";
+
+/** The web client's personality and context, appended to the agent's prompt.
+ * `where`: the sentence saying where he is (`location.whereLine`). */
+export function systemSuffix(profile: Profile, where = whereLine()): string {
+  const located = [
+    where,
+    `When he says he is somewhere else, call set_location. A line beginning ${WHERE_TAG} in his message is the HUD saying where he is now; it replaces what you knew, and needs no reply of its own.`,
+  ];
   const shared = [
     "This session is the J.A.R.V.I.S. web HUD at jarvis.opustower.dev.",
     "Every reply is spoken aloud by a text-to-speech voice as soon as you send it, so: one to three short sentences unless he asks for detail,",
@@ -28,7 +37,8 @@ export function systemSuffix(profile: Profile): string {
   if (profile.full) {
     return [
       shared[0],
-      "The user is Mr. Walker (James), in Calabasas, California; use America/Los_Angeles for times and dates.",
+      "The user is Mr. Walker (James).",
+      ...located,
       "Address him as Mr. Walker or sir, in the manner of the J.A.R.V.I.S. from the films: dry, courteous, quietly witty, never servile.",
       ...shared.slice(1),
       "Use opus_status for anything about the state of his systems and fleet_usage for spend, rather than guessing.",
@@ -42,7 +52,8 @@ export function systemSuffix(profile: Profile): string {
   }
   return [
     shared[0],
-    `The user is ${profile.name}, in Calabasas, California; use America/Los_Angeles for times and dates.`,
+    `The user is ${profile.name}.`,
+    ...located,
     `Address him as ${profile.name} or sir, in the manner of the J.A.R.V.I.S. from the films: dry, courteous, quietly witty, never servile.`,
     ...shared.slice(1),
     "Use fleet_usage for what his sessions have cost, rather than guessing, and set_reminder when he asks to be reminded.",
@@ -162,9 +173,14 @@ export class Jarvis {
     this.turnTag = opts.tag ?? "";
     this.ev.onPhase("thinking", task || "looking at the attached files");
     try {
+      const where = whereLine();
       if (this.sessionId) {
+        // A spoken turn tells a conversation that started elsewhere (or before
+        // the HUD knew) where he is now.
+        const moved = !opts.silent && load(storageKey(this.profile, "where")) !== where;
         try {
-          await post(`sessions/${this.sessionId}/events`, { task, ...files });
+          await post(`sessions/${this.sessionId}/events`, { task: moved ? `${task}\n${WHERE_TAG} ${where}` : task, ...files });
+          if (moved) save(storageKey(this.profile, "where"), where);
           return;
         } catch (e) {
           // A session that can no longer take messages: start afresh below.
@@ -177,13 +193,14 @@ export class Jarvis {
         agent_slug: this.profile.agent,
         task,
         client: "web",
-        system_suffix: systemSuffix(this.profile),
+        system_suffix: systemSuffix(this.profile, where),
         tools: toolsFor(this.profile.full),
         ...files,
         ...(this.modelId ? { model: this.modelId } : {}),
       });
       this.sessionId = created.session_id;
       save(storageKey(this.profile, "session"), this.sessionId);
+      save(storageKey(this.profile, "where"), where);
       await this.attach(false);
     } catch (e) {
       this.busy = false;
@@ -325,6 +342,8 @@ export class Jarvis {
       jobs: () => this.ev.jobs(),
       full: this.profile.full,
     });
+    // He told this conversation himself; no need to tell it again.
+    if (name === "set_location" && !result.is_error) save(storageKey(this.profile, "where"), whereLine());
     await post(`sessions/${this.sessionId}/tool-results`, {
       results: [{ custom_tool_use_id: toolUseId, content: result.content, ...(result.is_error ? { is_error: true } : {}) }],
     }).catch((e) => this.transcript.note(`tool result not delivered: ${String(e)}`, true));

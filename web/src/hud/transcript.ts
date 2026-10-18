@@ -99,7 +99,8 @@ export class Transcript {
     let out: Rendered = { kind: "other" };
     switch (ev.type) {
       case "user.message": {
-        const text = textOf(ev.content);
+        // The HUD's own note of where he is isn't something he said.
+        const text = textOf(ev.content).replace(/\n?^\[location\] .*$/m, "");
         // Terminal commands carry an instruction; show just the command.
         const term = text.startsWith("[terminal]") ? text.split("\n").slice(1).join("\n").trim() : null;
         if (term !== null) this.append("entry-system entry-term", `$ ${term}`, ev.id);

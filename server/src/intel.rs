@@ -333,7 +333,7 @@ fn accept(format: Format) -> &'static str {
     }
 }
 
-async fn fetch(
+pub(crate) async fn fetch(
     http: &reqwest::Client,
     url: &str,
     accept: &str,
