@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { CreditWatch, creditLine, level, type Credits } from "./credits";
+import { setHere } from "./location";
 import { parseCsv, parseDollars, spendFromCsv } from "./usage";
 
 function credits(over: { anthropic?: Partial<Credits["anthropic"]>; fish?: Partial<Credits["fish"]> } = {}): Credits {
@@ -109,7 +110,9 @@ describe("usage CSV", () => {
     ]);
   });
 
-  it("buckets by Pacific day and by agent over the window", () => {
+  it("buckets by his day and by agent over the window", () => {
+    // He is in Calabasas; days are told in his zone, not this machine's.
+    setHere({ place: "Calabasas", region: "California", country: "US", lat: 34.138, lon: -118.661, time_zone: "America/Los_Angeles", weather: null, weather_at: 0, source: "device", at: 0 });
     // 2026-09-24 12:00 Pacific.
     const now = new Date("2026-09-24T19:00:00Z");
     const csv = [
@@ -130,6 +133,7 @@ describe("usage CSV", () => {
       { agent: "gpu-compute", cents: 300, sessions: 1, budgetHits: 1 },
       { agent: "jarvis", cents: 120, sessions: 2, budgetHits: 0 },
     ]);
+    setHere(null);
   });
 
   it("an empty export is an empty window", () => {

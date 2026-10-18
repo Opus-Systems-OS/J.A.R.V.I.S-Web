@@ -7,6 +7,7 @@
 import { get, webGet, webSend } from "../api";
 import { html, setHtml, type Html } from "../html";
 import { ago } from "./fleet";
+import { localZone } from "./location";
 
 type State = "ok" | "warn" | "down" | "idle" | "unknown";
 
@@ -246,7 +247,7 @@ export class SystemsView {
 
     this.layoutClients();
     this.draw();
-    this.$("#map-updated").textContent = `updated ${new Date().toLocaleTimeString("en-US", { timeZone: "America/Los_Angeles", hour: "2-digit", minute: "2-digit" })}`;
+    this.$("#map-updated").textContent = `updated ${new Date().toLocaleTimeString("en-US", { timeZone: localZone(), hour: "2-digit", minute: "2-digit" })}`;
     if (this.selected) this.showNode(this.selected);
   }
 

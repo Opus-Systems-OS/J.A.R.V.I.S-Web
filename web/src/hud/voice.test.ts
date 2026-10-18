@@ -52,12 +52,14 @@ describe("sentences", () => {
 });
 
 describe("greeting", () => {
-  it("salutes by Calabasas time", () => {
-    expect(salutation(new Date("2026-09-23T15:00:00Z"))).toBe("Good morning, Mr. Walker"); // 08:00 PDT
-    expect(salutation(new Date("2026-09-23T21:00:00Z"))).toBe("Good afternoon, Mr. Walker"); // 14:00 PDT
-    expect(salutation(new Date("2026-09-24T03:00:00Z"))).toBe("Good evening, Mr. Walker"); // 20:00 PDT
-    expect(salutation(new Date("2026-09-24T09:00:00Z"))).toBe("Burning the midnight oil, Mr. Walker"); // 02:00 PDT
-    expect(salutation(new Date("2026-09-24T03:00:00Z"), "Mr. Powers")).toBe("Good evening, Mr. Powers");
+  it("salutes by his local time", () => {
+    const LA = "America/Los_Angeles";
+    expect(salutation(new Date("2026-09-23T15:00:00Z"), "Mr. Walker", LA)).toBe("Good morning, Mr. Walker"); // 08:00 PDT
+    expect(salutation(new Date("2026-09-23T21:00:00Z"), "Mr. Walker", LA)).toBe("Good afternoon, Mr. Walker"); // 14:00 PDT
+    expect(salutation(new Date("2026-09-24T03:00:00Z"), "Mr. Walker", LA)).toBe("Good evening, Mr. Walker"); // 20:00 PDT
+    expect(salutation(new Date("2026-09-24T09:00:00Z"), "Mr. Walker", LA)).toBe("Burning the midnight oil, Mr. Walker"); // 02:00 PDT
+    expect(salutation(new Date("2026-09-24T03:00:00Z"), "Mr. Powers", LA)).toBe("Good evening, Mr. Powers");
+    expect(salutation(new Date("2026-09-24T09:00:00Z"), "Mr. Walker", "Europe/London")).toBe("Good morning, Mr. Walker"); // 10:00 BST
   });
 
   it("summarises the systems", () => {

@@ -2,6 +2,8 @@
 // Buffer) turned into the spoken lines of the greeting. A template, not a
 // model: only the lines worth saying today, instant, and never an invented
 // number. A source that is down or not connected is simply left out.
+// The API's weather is for a fixed place; the HUD swaps in the weather
+// where he actually is (`location.ts`), or says none.
 
 export interface SourceRow {
   id: string;
@@ -17,15 +19,16 @@ export interface Briefing {
   sources: SourceRow[];
 }
 
-const TZ = "America/Los_Angeles";
+import { localZone } from "./location";
+
 const WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 const say = (n: number) => WORDS[n] ?? String(n);
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
 
-/** "9 AM", "2:30 PM" in Calabasas. */
-export function spokenTime(iso: string): string {
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit", hour12: true }).formatToParts(
+/** "9 AM", "2:30 PM" where he is. */
+export function spokenTime(iso: string, tz = localZone()): string {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true }).formatToParts(
     new Date(iso),
   );
   const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
@@ -33,8 +36,8 @@ export function spokenTime(iso: string): string {
   return `${get("hour")}${minute === "00" ? "" : `:${minute}`} ${get("dayPeriod").toUpperCase()}`;
 }
 
-function hourIn(now: Date): number {
-  return Number(new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "numeric", hour12: false }).format(now)) % 24;
+function hourIn(now: Date, tz: string): number {
+  return Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: false }).format(now)) % 24;
 }
 
 /** The rows, or none when the API answered something else. */
@@ -49,7 +52,8 @@ function detail(b: Briefing, id: string): Record<string, unknown> | null {
 export function weatherLine(d: Record<string, unknown>): string | null {
   const t = num(d.temperature_f);
   if (t === null) return null;
-  let line = `It's ${t} degrees and ${str(d.conditions) ?? "fair"} in ${str(d.place) ?? "Calabasas"}`;
+  const place = str(d.place);
+  let line = `It's ${t} degrees and ${str(d.conditions) ?? "fair"}${place ? ` in ${place}` : " outside"}`;
   const high = num(d.high_f);
   if (high !== null && high > t) line += `, heading for ${high}`;
   const rain = num(d.rain_chance_pct);
@@ -57,14 +61,14 @@ export function weatherLine(d: Record<string, unknown>): string | null {
   return `${line}.`;
 }
 
-export function calendarLine(d: Record<string, unknown>, now: Date): string | null {
+export function calendarLine(d: Record<string, unknown>, now: Date, tz = localZone()): string | null {
   const events = (Array.isArray(d.events) ? d.events : []) as { title?: string; start?: string; all_day?: boolean }[];
   const upcoming = events.filter((e) => !e.all_day && e.start && Date.parse(e.start) > now.getTime());
   if (!upcoming.length) return null;
   const next = upcoming[0];
   const title = next.title || "an untitled event";
-  if (upcoming.length === 1) return `You have ${title} at ${spokenTime(next.start as string)}.`;
-  return `You have ${say(upcoming.length)} events left today; the first is ${title} at ${spokenTime(next.start as string)}.`;
+  if (upcoming.length === 1) return `You have ${title} at ${spokenTime(next.start as string, tz)}.`;
+  return `You have ${say(upcoming.length)} events left today; the first is ${title} at ${spokenTime(next.start as string, tz)}.`;
 }
 
 export function mailLine(d: Record<string, unknown>, sinceKnown: boolean): string | null {
@@ -101,12 +105,31 @@ export function bufferLine(d: Record<string, unknown>): string | null {
   return num(d.queued) === 0 ? "The Buffer queue is empty; nothing is scheduled to post." : null;
 }
 
-/** The lines worth saying, in order. `now` for tests. */
-export function briefingLines(b: Briefing, now = new Date()): string[] {
-  const morning = hourIn(now) < 12;
+/**
+ * The briefing with the weather where he is in place of the API's fixed
+ * place — or no weather row at all when that isn't known, rather than
+ * somewhere he may not be.
+ */
+export function withLocalWeather(b: Briefing, weather: Record<string, unknown> | null): Briefing {
+  const others = rowsOf(b).filter((s) => s.id !== "weather");
+  if (!weather) return { ...b, sources: others };
+  const t = num(weather.temperature_f);
+  const row: SourceRow = {
+    id: "weather",
+    name: "Weather",
+    state: "ok",
+    headline: `${t ?? "?"}°F, ${str(weather.conditions) ?? "fair"}${str(weather.place) ? ` in ${str(weather.place)}` : ""}`,
+    detail: weather,
+  };
+  return { ...b, sources: [row, ...others] };
+}
+
+/** The lines worth saying, in order. `now` and `tz` for tests. */
+export function briefingLines(b: Briefing, now = new Date(), tz = localZone()): string[] {
+  const morning = hourIn(now, tz) < 12;
   const lines = [
     detail(b, "weather") && weatherLine(detail(b, "weather") as Record<string, unknown>),
-    detail(b, "calendar") && calendarLine(detail(b, "calendar") as Record<string, unknown>, now),
+    detail(b, "calendar") && calendarLine(detail(b, "calendar") as Record<string, unknown>, now, tz),
     detail(b, "gmail") && mailLine(detail(b, "gmail") as Record<string, unknown>, !!b.since),
     detail(b, "youtube") && youtubeLine(detail(b, "youtube") as Record<string, unknown>),
     detail(b, "whoop") && whoopLine(detail(b, "whoop") as Record<string, unknown>, morning),

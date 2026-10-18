@@ -12,6 +12,7 @@
 import { ApiError, webGet } from "../../api";
 import { html, setHtml } from "../../html";
 import { leadLine, link, renderBrief } from "../brief";
+import { localZone } from "../location";
 import { Globe, type GlobeNode } from "./globe";
 import { ago, CATEGORIES, cluster, COLOR, toStory, type Category, type Entry, type Feed, type IntelNode, type SearchResult, type Story } from "./model";
 
@@ -268,7 +269,7 @@ export class IntelView {
     const located = this.nodes.reduce((n, x) => n + x.stories.length, 0);
     const ok = this.feed?.sources.filter((s) => s.ok).length ?? 0;
     const total = this.feed?.sources.length ?? 0;
-    const at = this.feed ? new Date(this.feed.generated_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "America/Los_Angeles" }) : "—";
+    const at = this.feed ? new Date(this.feed.generated_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: localZone() }) : "—";
     this.$("#intel-ticker").textContent = `${this.stories.length} stories · ${this.nodes.length} places · ${located} on map · ${ok}/${total} sources · ${at} PT`;
   }
 

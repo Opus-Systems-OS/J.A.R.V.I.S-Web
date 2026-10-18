@@ -212,6 +212,22 @@
   box-shadow: 0 0 8px var(--alert);
 }
 
+/* Where Jarvis thinks you are: a chip you can click to change it. */
+button.chip {
+  max-width: 14rem;
+  overflow: hidden;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+button.chip:hover {
+  border-color: var(--text-faint);
+}
+
 .btn-ghost {
   background: none;
   border: 1px solid var(--line);

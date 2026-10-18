@@ -9,6 +9,7 @@ import { html, setHtml, type Html } from "../html";
 import { CreditWatch, creditLine, dollars, fishDollars, level, type Credits } from "./credits";
 import { ago, FleetView } from "./fleet";
 import { greeting } from "./greeting";
+import { here, localZone, locateDevice, locateNamed, onChange as onWhereChange, placeName, type DeviceResult } from "./location";
 import { Jarvis, MODELS, type Phase } from "./jarvis";
 import { Listener, type Engine, type ListenerState } from "./listener";
 import { MicLease } from "./micLease";
@@ -51,6 +52,7 @@ const template = (full: boolean) => html`
     </nav>
     <div class="readouts">
       <span class="chip" id="hud-mic" data-state="off" title="Microphone">Mic</span>
+      <button class="chip" id="hud-where" data-state="pending" title="Where Jarvis thinks you are · click to change">Locating</button>
       <span class="readout" id="hud-date"></span>
       <span class="readout readout-clock" id="hud-clock"></span>
       <span class="chip" id="hud-link" data-state="pending">Link</span>
@@ -248,11 +250,17 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   root.querySelectorAll<HTMLButtonElement>(".tab").forEach((b) => (b.onclick = () => openPanel(b.dataset.tab ?? "HUD")));
 
   // ---- clock ---------------------------------------------------------------
-  const tz = "America/Los_Angeles";
-  const timeFmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-  const dateFmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", month: "short", day: "2-digit" });
+  // Told in his zone (`location.ts`), which can change while the HUD is open.
+  let tz = "";
+  let timeFmt: Intl.DateTimeFormat;
+  let dateFmt: Intl.DateTimeFormat;
   const tick = () => {
     const now = new Date();
+    if (tz !== localZone()) {
+      tz = localZone();
+      timeFmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+      dateFmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", month: "short", day: "2-digit" });
+    }
     $("#hud-clock").textContent = timeFmt.format(now);
     $("#hud-date").textContent = dateFmt.format(now).toUpperCase();
   };
@@ -702,8 +710,43 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     watch.start();
     jobWatch.start();
   }
+  // ---- where he is ----------------------------------------------------------
+  // The browser prompts for its location the first time; the greeting waits
+  // a few seconds for the answer, then goes without (it asks him instead).
+  const where = $<HTMLButtonElement>("#hud-where");
+  let whereState: DeviceResult | "pending" = "pending";
+  const renderWhere = () => {
+    const h = here();
+    const name = placeName(h);
+    where.textContent = name ?? (h ? "Located" : whereState === "pending" ? "Locating" : "Location?");
+    where.dataset.state = h ? "ok" : whereState === "pending" ? "pending" : "down";
+    where.title = h
+      ? `${name ?? `${h.lat}, ${h.lon}`} · ${localZone()} · ${h.source === "named" ? "you told Jarvis" : "from this device"} · click to change`
+      : whereState === "denied"
+        ? "Location is blocked for this site · click to tell Jarvis where you are"
+        : "Where Jarvis thinks you are · click to change";
+  };
+  const stopWhere = onWhereChange(renderWhere);
+  const located = locateDevice()
+    .then((r) => (whereState = r))
+    .catch(() => (whereState = "unavailable"))
+    .finally(renderWhere);
+  renderWhere();
+  where.onclick = async () => {
+    const named = window.prompt("Where are you? A city, e.g. Austin, TX. Leave it empty to use this device's location.", "");
+    if (named === null) return;
+    try {
+      if (named.trim()) await locateNamed(named);
+      else whereState = await locateDevice(15_000, true);
+    } catch (e) {
+      transcript.note(`location: ${e instanceof Error ? e.message : String(e)}`, true);
+    }
+    renderWhere();
+  };
+  const settled = Promise.race([located, new Promise((r) => window.setTimeout(r, 8000))]);
+
   void jarvis.resume();
-  void Promise.all([greeting(profile), firstClaim]).then(([line, held]) => {
+  void Promise.all([greeting(profile, settled), firstClaim]).then(([line, held]) => {
     transcript.note(line);
     lastReplyAsked = false; // the greeting never opens a follow-up
     // Only the HUD with the mic speaks it; another open window just shows it.
@@ -718,6 +761,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       timers.forEach((t) => window.clearInterval(t));
       jobWatch.stop();
       reminderWatch.stop();
+      stopWhere();
       cancelAnimationFrame(raf);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("dragover", onDragOver);

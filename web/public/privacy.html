@@ -27,7 +27,7 @@
 <tr><td>Buffer</td><td>API key</td><td>The text and scheduled time of posts waiting in the queue.</td></tr>
 </tbody>
 </table>
-<p>Weather comes from Open-Meteo for a fixed location and involves no personal data.</p>
+<p>Location: when the dashboard is unlocked, it asks the browser for its location (the browser asks the owner first, and it can be refused), or uses a city the owner names. The position is rounded to about a hundred metres and sent by the server to OpenStreetMap's Nominatim to name the place, and to Open-Meteo for the weather and time zone there; a named city is looked up with Open-Meteo's geocoder. The place is kept in that browser so the next unlock knows it, held in the server's memory for ten minutes, and told to J.A.R.V.I.S. (and so to Anthropic) as the city and time zone, so times and weather are local. It is not stored on the server or used for anything else.</p>
 
 <h2>How it is used</h2>
 <p>Only to brief the owner. That means a spoken greeting when he opens his own password-protected dashboard ("it's 67 degrees, you have two new emails, your first meeting is at nine"), and answers when he asks J.A.R.V.I.S. about his day. The data is not used for advertising, profiling, or anything unrelated to that briefing, and it is never sold.</p>

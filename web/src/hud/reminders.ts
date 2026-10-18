@@ -4,8 +4,7 @@
 // the next unlock, after the greeting.
 
 import { web, webGet } from "../api";
-
-const TZ = "America/Los_Angeles";
+import { localZone } from "./location";
 
 export interface Reminder {
   id: number;
@@ -14,16 +13,16 @@ export interface Reminder {
   due: boolean;
 }
 
-/** Now as Calabasas wall time with its offset, e.g. `2026-09-28T15:04:00-07:00`. */
-export function laNow(now = new Date()): string {
-  return laIso(now);
+/** Now as his wall time with its offset, e.g. `2026-09-28T15:04:00-07:00`. */
+export function localNow(now = new Date(), tz = localZone()): string {
+  return localIso(now, tz);
 }
 
-/** An instant as Calabasas wall time with its offset. */
-export function laIso(d: Date): string {
+/** An instant as wall time in `tz` (his, by default) with its offset. */
+export function localIso(d: Date, tz = localZone()): string {
   const p = Object.fromEntries(
     new Intl.DateTimeFormat("en-US", {
-      timeZone: TZ,
+      timeZone: tz,
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
@@ -46,24 +45,31 @@ export function laIso(d: Date): string {
 /**
  * What `set_reminder` was given → an RFC 3339 time with an offset:
  * `in_minutes` from now, or `at` — with an offset as is, or a bare wall
- * time (`2026-09-29T09:00`) read as Calabasas time.
+ * time (`2026-09-29T09:00`) read as his time.
  */
-export function resolveAt(args: { at?: unknown; in_minutes?: unknown }, now = new Date()): string | null {
+export function resolveAt(args: { at?: unknown; in_minutes?: unknown }, now = new Date(), tz = localZone()): string | null {
   if (typeof args.in_minutes === "number" && args.in_minutes > 0) {
-    return laIso(new Date(now.getTime() + args.in_minutes * 60_000));
+    return localIso(new Date(now.getTime() + args.in_minutes * 60_000), tz);
   }
   if (typeof args.at !== "string" || !args.at.trim()) return null;
   const at = args.at.trim();
   if (/([+-]\d\d:\d\d|Z)$/.test(at)) return Number.isNaN(Date.parse(at)) ? null : at;
   const m = /^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)(?::(\d\d))?$/.exec(at);
   if (!m) return null;
-  // Try both Pacific offsets; the right one reads back as the same wall time.
-  for (const off of ["-07:00", "-08:00"]) {
-    const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6] ?? "00"}${off}`;
-    const t = Date.parse(iso);
-    if (!Number.isNaN(t) && laIso(new Date(t)) === iso) return iso;
-  }
-  return null;
+  // Read the wall time as UTC, then shift by the zone's offset there (twice,
+  // in case the shift crosses a DST change); the right instant reads back as
+  // the same wall time. None does in a spring-forward gap.
+  const wall = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6] ?? "00"}`;
+  const asUtc = Date.parse(`${wall}Z`);
+  if (Number.isNaN(asUtc)) return null;
+  const offsetMs = (t: number) => {
+    const iso = localIso(new Date(t), tz);
+    return Date.parse(`${iso.slice(0, 19)}Z`) - t;
+  };
+  let t = asUtc - offsetMs(asUtc);
+  t = asUtc - offsetMs(t);
+  const iso = localIso(new Date(t), tz);
+  return iso.startsWith(wall) ? iso : null;
 }
 
 /** "Sir, a reminder: call Josh." */

@@ -2,11 +2,13 @@
 // (session-local custom tools: the agent resource never sees them, other
 // clients' sessions never get them). Each reads through /bff, so Jarvis can
 // see exactly what this page can — and nothing it can't. All read-only
-// except `open_panel`, which only moves the HUD.
+// except `open_panel`, which only moves the HUD, `set_location`, which only
+// changes where this browser thinks he is, and the reminders.
 
 import { get, webGet } from "../api";
-import { compactBriefing, type Briefing } from "./briefing";
+import { compactBriefing, withLocalWeather, type Briefing } from "./briefing";
 import { compactJobs, type Job } from "./jobs";
+import * as location from "./location";
 import * as reminders from "./reminders";
 
 export interface ToolDef {
@@ -51,6 +53,29 @@ export function toolsFor(full: boolean): ToolDef[] {
 const TOOLS: ToolDef[] = [
   {
     type: "custom",
+    name: "location",
+    description:
+      "Where he is right now, as this HUD knows it (from his browser's location, or a place he told you): place, " +
+      "region, country, time zone, his local time as `now`, and the current weather there. Use it for 'what's the " +
+      "weather', 'what time is it', or anything that depends on where he is. `known: false` means ask him.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    type: "custom",
+    name: "set_location",
+    description:
+      "Set where he is when he tells you ('I'm in Austin', 'I'm back home in Calabasas'). Give the place as a city, " +
+      "optionally with its state or country: 'Austin, TX', 'London, UK'. Times, reminders and weather follow it. " +
+      "It holds for a few hours over what his device reports, then his device's location takes over again.",
+    input_schema: {
+      type: "object",
+      properties: { place: { type: "string", description: "City, with state or country if ambiguous, e.g. Austin, TX" } },
+      required: ["place"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
     name: "opus_status",
     description:
       "Live status of every Opus Systems OS service: the GitHub org, UptimeRobot monitors, the droplet (DigitalOcean), " +
@@ -85,7 +110,7 @@ const TOOLS: ToolDef[] = [
     type: "custom",
     name: "briefing",
     description:
-      "His day right now: weather in Calabasas, today's calendar, unread Gmail (newest senders and subjects), YouTube " +
+      "His day right now: the weather where he is, today's calendar, unread Gmail (newest senders and subjects), YouTube " +
       "views this week against last, WHOOP recovery, sleep and strain, and the Buffer posting queue. Each source is a " +
       "row with state ok/warn/down; a down row says why (e.g. not connected yet). Use it for 'how's my day', 'any " +
       "email', 'what's on today', 'how did I sleep', and before summarizing his morning.",
@@ -110,13 +135,13 @@ const TOOLS: ToolDef[] = [
     name: "set_reminder",
     description:
       "Set a reminder that the HUD speaks when it is due (or at his next unlock if no HUD is open). Give either " +
-      "in_minutes, or at as Calabasas wall time 'YYYY-MM-DDTHH:MM' (or RFC 3339 with an offset). If you don't know " +
+      "in_minutes, or at as his local wall time 'YYYY-MM-DDTHH:MM' (or RFC 3339 with an offset). If you don't know " +
       "today's date, call list_reminders first: it returns the current time. Confirm the time back to him in words.",
     input_schema: {
       type: "object",
       properties: {
         text: { type: "string", description: "What to remind him of, as it should be said: 'call Josh about the invoice'" },
-        at: { type: "string", description: "Calabasas wall time, e.g. 2026-09-29T09:00" },
+        at: { type: "string", description: "His local wall time, e.g. 2026-09-29T09:00" },
         in_minutes: { type: "number", description: "Minutes from now, instead of at" },
       },
       required: ["text"],
@@ -126,7 +151,7 @@ const TOOLS: ToolDef[] = [
   {
     type: "custom",
     name: "list_reminders",
-    description: "The reminders not yet spoken (id, text, due_at, due), and the current time in Calabasas as `now`.",
+    description: "The reminders not yet spoken (id, text, due_at, due), and the current time where he is as `now`.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -177,6 +202,22 @@ function compactUsage(u: Json): unknown {
   };
 }
 
+/** What the `location` tools answer. */
+function compactHere(): unknown {
+  const h = location.here();
+  const base = { now: reminders.localNow(), time_zone: location.localZone() };
+  if (!h) return { known: false, ...base, note: "ask him where he is, then call set_location" };
+  return {
+    known: true,
+    place: location.placeName(h) ?? undefined,
+    lat: h.lat,
+    lon: h.lon,
+    from: h.source === "named" ? "he said so" : "his device",
+    ...base,
+    weather: location.freshWeather(h) ?? undefined,
+  };
+}
+
 export async function runTool(
   name: string,
   input: unknown,
@@ -201,27 +242,38 @@ export async function runTool(
         return { content: JSON.stringify(compactUsage(usage)) };
       }
       case "briefing": {
-        const b = await get<Briefing>("briefing");
-        return { content: JSON.stringify(compactBriefing(b)) };
+        const [b] = await Promise.all([get<Briefing>("briefing"), location.refresh().catch(() => null)]);
+        return { content: JSON.stringify(compactBriefing(withLocalWeather(b, location.freshWeather()))) };
+      }
+      case "location": {
+        await location.refresh().catch(() => null);
+        return { content: JSON.stringify(compactHere()) };
+      }
+      case "set_location": {
+        const place = typeof args.place === "string" ? args.place.trim() : "";
+        if (!place) return { content: "need place, e.g. Austin, TX", is_error: true };
+        await location.locateNamed(place);
+        return { content: JSON.stringify(compactHere()) };
       }
       case "set_reminder": {
         const text = typeof args.text === "string" ? args.text.trim() : "";
         const at = reminders.resolveAt(args);
         if (!text || !at) {
           return {
-            content: `need text and either in_minutes or at as YYYY-MM-DDTHH:MM (Calabasas); it is now ${reminders.laNow()}`,
+            content: `need text and either in_minutes or at as YYYY-MM-DDTHH:MM (his local time); it is now ${reminders.localNow()}`,
             is_error: true,
           };
         }
         const r = await reminders.create(text, at);
-        return { content: JSON.stringify({ set: { id: r.id, text: r.text, due_at: reminders.laIso(new Date(r.due_at)) }, now: reminders.laNow() }) };
+        return { content: JSON.stringify({ set: { id: r.id, text: r.text, due_at: reminders.localIso(new Date(r.due_at)) }, now: reminders.localNow() }) };
       }
       case "list_reminders": {
         const list = await reminders.pending();
         return {
           content: JSON.stringify({
-            now: reminders.laNow(),
-            reminders: list.map((r) => ({ id: r.id, text: r.text, due_at: reminders.laIso(new Date(r.due_at)), due: r.due })),
+            now: reminders.localNow(),
+            time_zone: location.localZone(),
+            reminders: list.map((r) => ({ id: r.id, text: r.text, due_at: reminders.localIso(new Date(r.due_at)), due: r.due })),
           }),
         };
       }

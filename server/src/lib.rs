@@ -17,6 +17,7 @@ pub mod db;
 pub mod error;
 pub mod honey;
 pub mod intel;
+pub mod local;
 pub mod mic;
 pub mod reminders;
 pub mod request_id;
@@ -38,6 +39,7 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub mic: std::sync::Arc<mic::Lease>,
     pub intel: std::sync::Arc<intel::Intel>,
+    pub local: std::sync::Arc<local::Cache>,
 }
 
 impl AppState {
@@ -51,6 +53,7 @@ impl AppState {
             http,
             mic: std::sync::Arc::default(),
             intel: std::sync::Arc::default(),
+            local: std::sync::Arc::default(),
         })
     }
 }
@@ -77,7 +80,7 @@ fn security_headers(router: Router) -> Router {
         .layer(set(header::REFERRER_POLICY, "no-referrer"))
         .layer(set(
             HeaderName::from_static("permissions-policy"),
-            "microphone=(self), camera=(), geolocation=(), payment=(), usb=()",
+            "microphone=(self), camera=(), geolocation=(self), payment=(), usb=()",
         ))
         .layer(set(
             header::STRICT_TRANSPORT_SECURITY,
@@ -141,6 +144,7 @@ pub fn app(state: AppState) -> Router {
         .route("/web/security/unban", post(honey::unban))
         .route("/web/intel/feed", get(intel::feed))
         .route("/web/intel/search", get(intel::search))
+        .route("/web/local", get(local::get))
         .route_layer(from_fn_with_state(state.clone(), auth::require_session));
 
     let api = Router::new()

@@ -7,12 +7,16 @@
 import { raw, web } from "../api";
 import { html, setHtml } from "../html";
 import { dollars, fishDollars, type Credits } from "./credits";
+import { localZone } from "./location";
 
-const TZ = "America/Los_Angeles";
-const dayKey = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
-const dayLabel = new Intl.DateTimeFormat("en-US", { timeZone: TZ, weekday: "short", month: "short", day: "numeric" });
-const shortLabel = new Intl.DateTimeFormat("en-US", { timeZone: TZ, month: "short", day: "numeric" });
-const stamp = new Intl.DateTimeFormat("en-US", { timeZone: TZ, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+// Days and stamps in his zone (`location.ts`).
+const fmt = (locale: string, o: Intl.DateTimeFormatOptions) => ({
+  format: (d: Date) => new Intl.DateTimeFormat(locale, { ...o, timeZone: localZone() }).format(d),
+});
+const dayKey = fmt("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" });
+const dayLabel = fmt("en-US", { weekday: "short", month: "short", day: "numeric" });
+const shortLabel = fmt("en-US", { month: "short", day: "numeric" });
+const stamp = fmt("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
 /** RFC 4180, as the control plane writes it (quotes only when needed). */
 export function parseCsv(text: string): string[][] {

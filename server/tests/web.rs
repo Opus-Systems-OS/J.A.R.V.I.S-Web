@@ -542,6 +542,10 @@ async fn shell_and_assets_carry_the_right_headers() {
         .to_str()
         .unwrap()
         .contains("microphone=(self)"));
+    assert!(r.headers["permissions-policy"]
+        .to_str()
+        .unwrap()
+        .contains("geolocation=(self)"));
     assert!(
         csp.contains("require-trusted-types-for 'script'") && csp.contains("trusted-types jarvis")
     );
@@ -1316,4 +1320,35 @@ async fn intel_is_the_owners_and_needs_an_unlock() {
     )
     .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn location_needs_an_unlock_and_a_real_place() {
+    let h = harness().await;
+    assert_eq!(
+        send(
+            &h,
+            bff(Method::GET, "/web/local?lat=34.16&lon=-118.64", None, None)
+        )
+        .await
+        .status,
+        StatusCode::UNAUTHORIZED
+    );
+    // Refused before anything leaves this box: off the globe, half a
+    // position, or an empty name.
+    let powers = unlock_as(&h, "powers", POWERS_PASSWORD).await;
+    for path in [
+        "/web/local?lat=91&lon=0",
+        "/web/local?lat=34.16",
+        "/web/local?q=%20",
+        "/web/local",
+    ] {
+        assert_eq!(
+            send(&h, bff(Method::GET, path, Some(&powers), None))
+                .await
+                .status,
+            StatusCode::BAD_REQUEST,
+            "{path}"
+        );
+    }
 }
