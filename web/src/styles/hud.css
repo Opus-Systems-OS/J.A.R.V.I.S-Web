@@ -368,15 +368,6 @@
 /* ---- narrow screens: stack, orb first ----------------------------------- */
 
 @media (max-width: 960px) {
-  body {
-    overflow: auto;
-  }
-
-  .hud {
-    height: auto;
-    min-height: 100%;
-  }
-
   .topbar {
     flex-wrap: wrap;
     gap: 0.6rem 1rem;

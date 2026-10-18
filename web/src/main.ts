@@ -9,6 +9,7 @@ import "./styles/voice.css";
 import "./styles/views.css";
 import "./styles/intel.css";
 import "./styles/reverse.css";
+import "./styles/phone.css";
 
 import { LOCKED_EVENT, type Profile } from "./api";
 import { showLock } from "./lock";

@@ -1,0 +1,183 @@
+/* ---- phones: the HUD as an app, held to the screen --------------------------
+   The page never scrolls or zooms. The top bar and tabs stay at the top, the
+   transcript and the text line stay at the bottom (above the home bar), and
+   only the view in between scrolls. Loaded last, so it wins at this width. */
+
+@media (max-width: 960px) {
+  html,
+  body {
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  .hud {
+    height: 100%;
+    height: 100dvh;
+    min-height: 0;
+  }
+
+  /* The lock scrolls on a short screen instead of clipping its form. */
+  .lock {
+    height: 100dvh;
+    overflow-y: auto;
+    justify-content: safe center;
+    padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+  }
+
+  /* iOS zooms into any field under 16px when it is focused. */
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
+  /* ---- top bar ---- */
+  .topbar {
+    gap: 0.5rem 0.75rem;
+    padding: max(0.5rem, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 0.4rem max(12px, env(safe-area-inset-left));
+  }
+
+  .brand {
+    font-size: 0.85rem;
+    letter-spacing: 0.2em;
+  }
+
+  .readouts {
+    gap: 0.4rem;
+  }
+
+  .readouts .btn-ghost {
+    padding: 0.25rem 0.5rem;
+    letter-spacing: 0.1em;
+  }
+
+  /* The phone shows the time already: brand and controls share one row. */
+  .readout-clock {
+    display: none;
+  }
+
+  /* Tabs scroll sideways; the fade says there are more. */
+  .tabs {
+    margin: 0 calc(-1 * max(12px, env(safe-area-inset-right))) 0 0;
+    padding-right: 24px;
+    mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+    scroll-snap-type: x proximity;
+  }
+
+  .tab {
+    padding: 0.4rem 0.65rem;
+    font-size: 0.8rem;
+    letter-spacing: 0.16em;
+    scroll-snap-align: start;
+  }
+
+  /* ---- the scrolling middle ---- */
+  /* A block, not a grid: each view keeps its own height and the middle
+     scrolls, instead of every view being squeezed into it. */
+  .views {
+    display: block;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .view {
+    padding: 12px max(12px, env(safe-area-inset-right)) 12px max(12px, env(safe-area-inset-left));
+  }
+
+  .stage {
+    min-height: auto;
+    gap: 12px;
+    padding: 12px max(12px, env(safe-area-inset-right)) 12px max(12px, env(safe-area-inset-left));
+  }
+
+  .column {
+    gap: 12px;
+  }
+
+  .center {
+    padding: 0.25rem 0 0.25rem;
+  }
+
+  .orb {
+    width: min(190px, 50vw);
+  }
+
+  .orb-caption {
+    margin-top: 0.6rem;
+  }
+
+  /* Views that sized themselves to the page fit the middle instead. */
+  .term {
+    height: calc(100dvh - 300px);
+    min-height: 320px;
+  }
+
+  .intel-stage {
+    height: min(52dvh, 440px);
+  }
+
+  .rea-report {
+    min-height: 0;
+    max-height: none;
+  }
+
+  .rea-report-body {
+    max-height: 70dvh;
+  }
+
+  /* ---- the dock ---- */
+  .dock {
+    padding: 0 max(10px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  }
+
+  .drawer-head {
+    flex-wrap: wrap;
+    gap: 0.4rem 0.6rem;
+    padding: 0.45rem 0.7rem;
+  }
+
+  .drawer-meta {
+    flex: 0 1 auto;
+  }
+
+  .drawer-meta:empty {
+    display: none;
+  }
+
+  .drawer-head .select-wrap {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .drawer-head .select-wrap select {
+    width: 100%;
+    max-width: 100%;
+    text-overflow: ellipsis;
+  }
+
+  .transcript {
+    height: 18dvh;
+    padding: 0.5rem 0.7rem;
+  }
+
+  .hud:not([data-tab="HUD"]) .transcript {
+    height: 64px;
+  }
+
+  .entry {
+    font-size: 0.9rem;
+  }
+
+  .ask {
+    gap: 0.4rem;
+    padding: 0.45rem 0.6rem 0.55rem;
+  }
+
+  .ask input {
+    min-width: 0;
+  }
+}
