@@ -339,11 +339,21 @@ pub(crate) async fn fetch(
     url: &str,
     accept: &str,
 ) -> std::result::Result<Vec<u8>, String> {
+    fetch_within(http, url, accept, FETCH_TIMEOUT).await
+}
+
+/// `fetch` for a slow source (a Wikidata query takes several seconds).
+pub(crate) async fn fetch_within(
+    http: &reqwest::Client,
+    url: &str,
+    accept: &str,
+    timeout: Duration,
+) -> std::result::Result<Vec<u8>, String> {
     let res = http
         .get(url)
         .header(header::USER_AGENT, USER_AGENT)
         .header(header::ACCEPT, accept)
-        .timeout(FETCH_TIMEOUT)
+        .timeout(timeout)
         .send()
         .await
         .map_err(|e| {
