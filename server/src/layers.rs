@@ -172,12 +172,13 @@ pub fn parse_tle(text: &str, group: &str) -> Vec<(String, Value)> {
         .map(str::trim_end)
         .filter(|l| !l.is_empty())
         .collect();
-    lines
-        .chunks_exact(3)
-        .filter(|c| c[1].starts_with("1 ") && c[2].starts_with("2 ") && c[1].len() >= 69)
-        .map(|c| {
-            let id = c[1][2..7].trim().to_owned();
-            let v = json!([id, c[0].trim(), group, c[1], c[2]]);
+    let (triplets, _) = lines.as_chunks::<3>();
+    triplets
+        .iter()
+        .filter(|[_, l1, l2]| l1.starts_with("1 ") && l2.starts_with("2 ") && l1.len() >= 69)
+        .map(|[name, l1, l2]| {
+            let id = l1[2..7].trim().to_owned();
+            let v = json!([id, name.trim(), group, l1, l2]);
             (id, v)
         })
         .collect()
