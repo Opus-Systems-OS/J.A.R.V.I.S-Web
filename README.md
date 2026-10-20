@@ -60,6 +60,12 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   must be http(s) and text is stripped of markup. Intel is the owner's.
   Search and Jarvis's briefs cover news and public-figure entries only:
   public role and record, never a private person's address, phone or family.
+  The globe's live layers come the same way (`/web/intel/layer/{name}`,
+  each cached for as long as its source allows): CelesTrak satellites
+  (stations, brightest, military), OpenSky flights (cargo airlines picked
+  out), adsb.lol military aircraft, Open-Meteo temperature, and AISStream
+  ships. Ships need a free AISStream key in `AISSTREAM_API_KEY_FILE`; without
+  it that layer just says so.
 - **Reverse runs in Jarvis's sandbox, never here.** The Reverse tab hands
   Jarvis a target (an uploaded file, a link, or a path in his sandbox) and a
   question as one silent `[rea]` turn; he installs
@@ -82,6 +88,7 @@ server/src/auth.rs     unlock, cookie, idle lock, rate limits, CSRF header, Sec-
 server/src/bff.rs      allowlisted passthrough to the API (SSE streams through)
 server/src/honey.rs    honeypot: trap paths, bait .env, canary, bans
 server/src/intel.rs    Intel: news + hazard feeds and search, fetched and normalized here
+server/src/layers.rs   Intel globe layers: satellites, flights, military air, ships, climate
 server/src/db.rs       SQLite: web_sessions, login_failures, bans, trap_hits, …
 web/src/html.ts        the one Trusted Types policy + the escaping `html` template
 web/src/hud/intel/     the Intel tab: canvas globe, gazetteer, classifier, dossier

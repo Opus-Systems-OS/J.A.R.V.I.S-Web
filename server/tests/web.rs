@@ -230,6 +230,7 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
         static_dir: Some(dir.0.clone()),
         session_hours: 12,
         session_idle_minutes: 120,
+        aisstream_key: None,
     };
     tweak(&mut config);
     let db = Db::in_memory().unwrap();

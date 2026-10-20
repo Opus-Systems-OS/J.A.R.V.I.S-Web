@@ -51,6 +51,8 @@ pub struct Config {
     pub session_hours: u32,
     /// An unlocked session nobody has used for this long locks.
     pub session_idle_minutes: u32,
+    /// AISStream key for the Intel ship layer; without it the layer says so.
+    pub aisstream_key: Option<SecretString>,
 }
 
 impl std::fmt::Debug for Config {
@@ -188,6 +190,7 @@ impl Config {
             static_dir: optional("STATIC_DIR").map(PathBuf::from),
             session_hours: number("SESSION_HOURS", 12)?,
             session_idle_minutes: number("SESSION_IDLE_MINUTES", 120)?,
+            aisstream_key: api_key("AISSTREAM_API_KEY")?,
         })
     }
 }

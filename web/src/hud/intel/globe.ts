@@ -1,6 +1,8 @@
 // The Intel globe: an orthographic Earth drawn on a canvas in the HUD's
 // orange: atmosphere, graticule, lit coastlines and US state lines, and
-// one pulsing node per place in the feed. Drag to turn,
+// one pulsing node per place in the feed, plus optional layers of small
+// marks (aircraft, ships, satellites, temperature cells) that move live.
+// Drag to turn,
 // wheel or pinch to zoom; it drifts on its own when left alone and flies
 // to whatever is selected. Map data is bundled (world-atlas, us-atlas), so
 // nothing is fetched from anywhere.
@@ -20,6 +22,62 @@ export interface GlobeNode {
   weight: number;
   label: string;
   count: number;
+  /** Layer marks only: how to draw it, and where it is now (live motion). */
+  shape?: "plane" | "ship" | "sat" | "cell";
+  /** Heading, degrees clockwise from north (planes). */
+  track?: number | null;
+  pos?: (now: number) => [number, number] | null;
+}
+
+/** A layer mark plus its cached trig and last screen position. */
+interface Mark extends GlobeNode {
+  sinLat: number;
+  cosLat: number;
+  sinLon: number;
+  cosLon: number;
+  x: number;
+  y: number;
+  vis: boolean;
+}
+
+const RAD = Math.PI / 180;
+
+function place(m: Mark, lat: number, lon: number) {
+  m.lat = lat;
+  m.lon = lon;
+  m.sinLat = Math.sin(lat * RAD);
+  m.cosLat = Math.cos(lat * RAD);
+  m.sinLon = Math.sin(lon * RAD);
+  m.cosLon = Math.cos(lon * RAD);
+}
+
+/**
+ * Orthographic projection of a mark for the view centred on (lat0, lon0),
+ * from its cached trig: d3's maths without its per-point allocations, so
+ * ten thousand aircraft stay cheap. Null when it is on the far side.
+ */
+export function orthographic(
+  lat: number,
+  lon: number,
+  lat0: number,
+  lon0: number,
+  scale: number,
+  cx: number,
+  cy: number,
+): [number, number] | null {
+  const m = { sinLat: Math.sin(lat * RAD), cosLat: Math.cos(lat * RAD), sinLon: Math.sin(lon * RAD), cosLon: Math.cos(lon * RAD) };
+  const v = view(lat0, lon0);
+  return project(m, v, scale, cx, cy);
+}
+
+type View = { s0: number; c0: number; sl0: number; cl0: number };
+const view = (lat0: number, lon0: number): View => ({ s0: Math.sin(lat0 * RAD), c0: Math.cos(lat0 * RAD), sl0: Math.sin(lon0 * RAD), cl0: Math.cos(lon0 * RAD) });
+
+function project(m: Pick<Mark, "sinLat" | "cosLat" | "sinLon" | "cosLon">, v: View, scale: number, cx: number, cy: number): [number, number] | null {
+  const cosD = m.cosLon * v.cl0 + m.sinLon * v.sl0; // cos(lon - lon0)
+  const sinD = m.sinLon * v.cl0 - m.cosLon * v.sl0;
+  if (v.s0 * m.sinLat + v.c0 * m.cosLat * cosD < 0.02) return null;
+  return [cx + scale * m.cosLat * sinD, cy - scale * (v.c0 * m.sinLat - v.s0 * m.cosLat * cosD)];
 }
 
 export interface GlobeEvents {
@@ -71,6 +129,8 @@ export class Globe {
   private readonly resize: ResizeObserver;
   private readonly off: (() => void)[] = [];
   private dim = false;
+  private readonly layers = new Map<string, Mark[]>();
+  private lastMove = 0;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -91,6 +151,33 @@ export class Globe {
     if (this.selected && !nodes.some((n) => n.key === this.selected)) this.selected = null;
   }
 
+  /** Show (or with null, clear) a layer of marks. Same-coloured marks
+   * next to each other draw in one path, so callers group them. */
+  setLayer(name: string, marks: GlobeNode[] | null) {
+    if (!marks) {
+      this.layers.delete(name);
+      return;
+    }
+    const now = Date.now();
+    this.layers.set(
+      name,
+      marks.map((n) => {
+        const m = { ...n, sinLat: 0, cosLat: 1, sinLon: 0, cosLon: 1, x: 0, y: 0, vis: false };
+        const at = n.pos?.(now) ?? [n.lat, n.lon];
+        place(m, at[0], at[1]);
+        return m;
+      }),
+    );
+  }
+
+  private findMark(key: string): Mark | undefined {
+    for (const marks of this.layers.values()) {
+      const m = marks.find((x) => x.key === key);
+      if (m) return m;
+    }
+    return undefined;
+  }
+
   /** Fade the base layer (a search is showing its own nodes). */
   setDim(dim: boolean) {
     this.dim = dim;
@@ -98,7 +185,7 @@ export class Globe {
 
   select(key: string | null, fly = true) {
     this.selected = key;
-    const n = key ? this.nodes.find((x) => x.key === key) : null;
+    const n = key ? (this.nodes.find((x) => x.key === key) ?? this.findMark(key)) : null;
     if (n && fly) this.flyTo(n.lat, n.lon, Math.max(this.zoom, 2.4));
   }
 
@@ -232,7 +319,27 @@ export class Globe {
         bestD = d;
       }
     }
-    return best;
+    if (best) return best;
+    // Then small layer marks, then temperature cells (big, so last).
+    for (const cells of [false, true]) {
+      for (const marks of this.layers.values()) {
+        if ((marks[0]?.shape === "cell") !== cells) continue;
+        const reach = cells ? this.cellRadius() : 7;
+        for (const m of marks) {
+          const d = m.vis ? Math.hypot(m.x - x, m.y - y) : Infinity;
+          if (d < reach && d < bestD) {
+            best = { node: m, x: m.x, y: m.y, r: 4 };
+            bestD = d;
+          }
+        }
+      }
+      if (best) return best;
+    }
+    return null;
+  }
+
+  private cellRadius(): number {
+    return this.projection.scale() * 10 * RAD * 0.42;
   }
 
   // ---- frame -----------------------------------------------------------------
@@ -253,6 +360,15 @@ export class Globe {
   private step(t: number) {
     const dt = Math.min(64, t - this.last);
     this.last = t;
+    if (t - this.lastMove > 1000) {
+      this.lastMove = t;
+      const now = Date.now();
+      for (const marks of this.layers.values())
+        for (const m of marks) {
+          const at = m.pos?.(now);
+          if (at) place(m, at[0], at[1]);
+        }
+    }
     if (this.flight) {
       const f = this.flight;
       const k = ease(Math.min(1, (t - f.t0) / f.ms));
@@ -330,8 +446,54 @@ export class Globe {
     ctx.shadowBlur = 0;
     this.ticks(cx, cy, r * 1.1);
 
+    this.drawMarks(true, dim);
+    this.drawMarks(false, dim);
     this.drawNodes(t);
     this.readout(w, h);
+  }
+
+  /** One layer pass: temperature cells (under everything) or the rest. */
+  private drawMarks(cells: boolean, dim: number) {
+    const ctx = this.ctx;
+    const [cx, cy] = this.projection.translate();
+    const scale = this.projection.scale();
+    const v = view(-this.rotation[1], -this.rotation[0]);
+    const size = Math.min(1.6, 0.8 + this.zoom * 0.15);
+    const cellR = this.cellRadius();
+    ctx.globalAlpha = dim;
+    for (const marks of this.layers.values()) {
+      if (!marks.length || (marks[0].shape === "cell") !== cells) continue;
+      let colour = "";
+      for (const m of marks) {
+        const p = project(m, v, scale, cx, cy);
+        m.vis = !!p;
+        if (!p) continue;
+        [m.x, m.y] = p;
+        if (m.color !== colour) {
+          if (colour) ctx.fill();
+          ctx.beginPath();
+          ctx.fillStyle = colour = m.color;
+        }
+        if (m.shape === "plane") {
+          // A dart along the heading (north is up on screen near the centre).
+          const a = ((m.track ?? 0) - 90) * RAD;
+          const [ca, sa] = [Math.cos(a) * size, Math.sin(a) * size];
+          ctx.moveTo(m.x + ca * 4.5, m.y + sa * 4.5);
+          ctx.lineTo(m.x - ca * 3 - sa * 2.6, m.y - sa * 3 + ca * 2.6);
+          ctx.lineTo(m.x - ca * 1.6, m.y - sa * 1.6);
+          ctx.lineTo(m.x - ca * 3 + sa * 2.6, m.y - sa * 3 - ca * 2.6);
+          ctx.closePath();
+        } else if (m.shape === "cell") {
+          ctx.moveTo(m.x + cellR, m.y);
+          ctx.arc(m.x, m.y, cellR, 0, Math.PI * 2);
+        } else {
+          const half = (m.shape === "sat" ? 2.2 : 1.6) * size;
+          ctx.rect(m.x - half, m.y - half, half * 2, half * 2);
+        }
+      }
+      if (colour) ctx.fill();
+    }
+    ctx.globalAlpha = 1;
   }
 
   private ticks(cx: number, cy: number, r: number) {
@@ -363,6 +525,10 @@ export class Globe {
       if (node.key === this.selected) selected = pr;
     }
     this.projected = out;
+    if (!selected && this.selected) {
+      const m = this.findMark(this.selected);
+      if (m?.vis) selected = { node: m, x: m.x, y: m.y, r: 4 };
+    }
 
     for (const { node, x, y, r } of out) {
       // Glow.
