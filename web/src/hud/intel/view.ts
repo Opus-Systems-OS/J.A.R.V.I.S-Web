@@ -4,7 +4,9 @@
 // writes a brief that renders here (and says its first line aloud).
 // Search finds news coverage of anything and the Wikipedia entries that
 // match it (several people who share a name each appear), and puts the
-// coverage it can place on the globe.
+// coverage it can place on the globe. Layer toggles add live aircraft
+// (with military and cargo picked out), ships, satellites and temperature;
+// click one and Jarvis can identify it.
 //
 // Everything from the feeds goes in with textContent; the skeleton is the
 // only markup, and it goes through `html`.
@@ -14,6 +16,7 @@ import { html, setHtml } from "../../html";
 import { leadLine, link, renderBrief } from "../brief";
 import { localZone } from "../location";
 import { Globe, type GlobeNode } from "./globe";
+import { LAYERS, layerMarks, thingPrompt, type LayerData, type LayerId, type Thing } from "./layers";
 import { ago, CATEGORIES, cluster, COLOR, toStory, type Category, type Entry, type Feed, type IntelNode, type SearchResult, type Story } from "./model";
 
 export { leadLine, renderBrief };
@@ -21,6 +24,7 @@ export { leadLine, renderBrief };
 const REFRESH_MS = 5 * 60_000;
 const MAX_ROWS = 160;
 const BRIEF_TIMEOUT_MS = 6 * 60_000;
+const LAYERS_KEY = "jarvis.intel.layers";
 
 export interface IntelHost {
   /** Ask Jarvis on the conversation, silently; resolves with his reply. */
@@ -48,6 +52,7 @@ const SKELETON = html`
         <button class="btn-ghost" id="intel-world" title="Show the whole world">World</button>
         <button class="btn-ghost" id="intel-refresh" title="Fetch the feeds again">Refresh</button>
       </div>
+      <div class="intel-overlay intel-layers" id="intel-layers" role="group" aria-label="Layers"></div>
       <div class="intel-search-banner" id="intel-search-banner" hidden>
         <span id="intel-search-label"></span>
         <button class="btn-ghost" id="intel-search-clear">Clear search</button>
@@ -121,6 +126,12 @@ export class IntelView {
   private readonly briefs = new Map<string, string>();
   private briefing: string | null = null;
   private feed: Feed | null = null;
+  private readonly layerOn = new Set<LayerId>(savedLayers());
+  /** When each layer last loaded, and what it said (a count or a problem). */
+  private readonly layerAt = new Map<LayerId, number>();
+  private readonly layerNote = new Map<LayerId, string>();
+  private readonly things = new Map<string, Thing>();
+  private layerTimer = 0;
 
   constructor(
     root: HTMLElement,
@@ -143,6 +154,7 @@ export class IntelView {
       if (q) void this.runSearch(q);
     };
     this.renderChips();
+    this.renderLayers();
     this.renderIdle();
   }
 
@@ -152,12 +164,17 @@ export class IntelView {
     if (Date.now() - this.loadedAt > REFRESH_MS) void this.load();
     window.clearInterval(this.timer);
     this.timer = window.setInterval(() => void this.load(), REFRESH_MS);
+    const due = () => this.layerOn.forEach((id) => Date.now() - (this.layerAt.get(id) ?? 0) > refreshOf(id) && void this.loadLayer(id));
+    due();
+    window.clearInterval(this.layerTimer);
+    this.layerTimer = window.setInterval(due, 60_000);
   }
 
   hide() {
     this.visible = false;
     this.globe.stop();
     window.clearInterval(this.timer);
+    window.clearInterval(this.layerTimer);
   }
 
   dispose() {
@@ -291,6 +308,69 @@ export class IntelView {
     );
   }
 
+  // ---- live layers -----------------------------------------------------------
+
+  private renderLayers() {
+    this.$("#intel-layers").replaceChildren(
+      ...LAYERS.map((l) => {
+        const b = el<HTMLButtonElement>("button", "intel-chip intel-layer");
+        b.type = "button";
+        b.style.setProperty("--chip", l.color);
+        b.setAttribute("aria-pressed", String(this.layerOn.has(l.id)));
+        const note = this.layerOn.has(l.id) ? (this.layerNote.get(l.id) ?? "…") : "";
+        b.append(el("span", "intel-chip-dot"), el("span", "", l.label), el("span", "intel-chip-n", note));
+        b.title = note || `Show ${l.label.toLowerCase()}`;
+        b.onclick = () => {
+          if (this.layerOn.delete(l.id)) {
+            this.globe.setLayer(l.id, null);
+            for (const k of this.things.keys()) if (k.startsWith(`${l.id}:`)) this.things.delete(k);
+            this.layerAt.delete(l.id);
+          } else {
+            this.layerOn.add(l.id);
+            void this.loadLayer(l.id);
+          }
+          saveLayers(this.layerOn);
+          this.renderLayers();
+        };
+        return b;
+      }),
+    );
+  }
+
+  private async loadLayer(id: LayerId) {
+    this.layerAt.set(id, Date.now());
+    try {
+      const data = await webGet<LayerData>(`intel/layer/${id}`);
+      if (!this.layerOn.has(id)) return; // switched off while loading
+      const { marks, things } = layerMarks(id, data);
+      this.globe.setLayer(id, marks);
+      for (const k of this.things.keys()) if (k.startsWith(`${id}:`)) this.things.delete(k);
+      things.forEach((t, k) => this.things.set(k, t));
+      this.layerNote.set(id, data.error && !marks.length ? data.error : marks.length.toLocaleString("en-US"));
+    } catch (e) {
+      this.layerNote.set(id, e instanceof ApiError ? e.message : "unavailable");
+    }
+    this.renderLayers();
+  }
+
+  private renderThing(key: string, t: Thing) {
+    const d = this.dossier();
+    d.replaceChildren();
+    d.style.removeProperty("--cat");
+    const at = t.pos(Date.now());
+    const head = el("header", "intel-dossier-head");
+    head.append(
+      el("span", "intel-kicker", t.kind),
+      el("h3", "intel-dossier-title", t.title),
+      el("span", "intel-coords", at ? `${Math.abs(at[0]).toFixed(3)}°${at[0] >= 0 ? "N" : "S"} ${Math.abs(at[1]).toFixed(3)}°${at[1] >= 0 ? "E" : "W"}` : "position unknown"),
+    );
+    d.append(head);
+    const dl = el("dl", "intel-facts");
+    for (const [k, v] of t.fields) dl.append(el("dt", "", k), el("dd", "", v));
+    d.append(dl);
+    d.append(this.briefBlock(key, "Analyze with Jarvis", () => thingPrompt(t)));
+  }
+
   // ---- selection and the dossier ---------------------------------------------
 
   private currentNodes(): IntelNode[] {
@@ -300,6 +380,11 @@ export class IntelView {
   private selectNode(key: string | null, fly = true) {
     this.selectedKey = key;
     this.globe.select(key, fly);
+    const thing = key ? this.things.get(key) : undefined;
+    if (key && thing) {
+      this.renderThing(key, thing);
+      return;
+    }
     const node = key ? this.currentNodes().find((n) => n.key === key) : null;
     if (!node) {
       if (this.search) this.renderSearch();
@@ -526,4 +611,23 @@ export class IntelView {
 
 function toGlobe(n: IntelNode): GlobeNode {
   return { key: n.key, lat: n.lat, lon: n.lon, color: COLOR[n.category], weight: n.weight, label: n.name, count: n.stories.length };
+}
+
+const refreshOf = (id: LayerId) => LAYERS.find((l) => l.id === id)?.refreshMs ?? REFRESH_MS;
+
+function savedLayers(): LayerId[] {
+  try {
+    const ids = JSON.parse(localStorage.getItem(LAYERS_KEY) ?? "[]") as string[];
+    return LAYERS.filter((l) => ids.includes(l.id)).map((l) => l.id);
+  } catch {
+    return [];
+  }
+}
+
+function saveLayers(on: Set<LayerId>) {
+  try {
+    localStorage.setItem(LAYERS_KEY, JSON.stringify([...on]));
+  } catch {
+    /* private mode: the toggles just don't survive a reload */
+  }
 }

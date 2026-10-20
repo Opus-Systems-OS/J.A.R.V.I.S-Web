@@ -234,6 +234,51 @@
   white-space: nowrap;
 }
 
+/* Live layers: toggles under the ticker */
+.intel-layers {
+  top: 62px;
+  left: 18px;
+  right: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  pointer-events: none;
+}
+
+.intel-layer {
+  pointer-events: auto;
+  background: rgba(14, 6, 2, 0.75);
+}
+
+.intel-layer .intel-chip-n {
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.intel-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.3rem 0.85rem;
+  margin: 0 0 0.85rem;
+  font-size: 0.88rem;
+}
+
+.intel-facts dt {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding-top: 0.15rem;
+}
+
+.intel-facts dd {
+  margin: 0;
+  color: var(--text);
+}
+
 /* Dossier */
 .intel-search {
   display: flex;

@@ -142,9 +142,10 @@ struct SearchOut {
 pub struct Intel {
     feed: tokio::sync::Mutex<Option<(Instant, Bytes)>>,
     searches: Mutex<HashMap<String, (Instant, Bytes)>>,
+    pub(crate) layers: crate::layers::Slots,
 }
 
-fn json(body: Bytes) -> Response {
+pub(crate) fn json(body: Bytes) -> Response {
     let mut res = body.into_response();
     res.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -155,7 +156,7 @@ fn json(body: Bytes) -> Response {
     res
 }
 
-fn now_rfc3339() -> String {
+pub(crate) fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_default()

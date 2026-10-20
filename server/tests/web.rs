@@ -230,6 +230,7 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
         static_dir: Some(dir.0.clone()),
         session_hours: 12,
         session_idle_minutes: 120,
+        aisstream_key: None,
     };
     tweak(&mut config);
     let db = Db::in_memory().unwrap();
@@ -1298,7 +1299,11 @@ async fn locking_every_device_ends_every_session_of_that_profile_only() {
 async fn intel_is_the_owners_and_needs_an_unlock() {
     let h = harness().await;
     let powers = unlock_as(&h, "powers", POWERS_PASSWORD).await;
-    for path in ["/web/intel/feed", "/web/intel/search?q=fire"] {
+    for path in [
+        "/web/intel/feed",
+        "/web/intel/search?q=fire",
+        "/web/intel/layer/flights",
+    ] {
         assert_eq!(
             send(&h, bff(Method::GET, path, None, None)).await.status,
             StatusCode::UNAUTHORIZED,
@@ -1320,6 +1325,13 @@ async fn intel_is_the_owners_and_needs_an_unlock() {
     )
     .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    // An unknown layer is a 404 before anything leaves this box.
+    let r = send(
+        &h,
+        bff(Method::GET, "/web/intel/layer/nope", Some(&walker), None),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

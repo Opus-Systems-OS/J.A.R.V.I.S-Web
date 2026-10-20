@@ -17,6 +17,7 @@ pub mod db;
 pub mod error;
 pub mod honey;
 pub mod intel;
+pub mod layers;
 pub mod local;
 pub mod mic;
 pub mod reminders;
@@ -144,6 +145,11 @@ pub fn app(state: AppState) -> Router {
         .route("/web/security/unban", post(honey::unban))
         .route("/web/intel/feed", get(intel::feed))
         .route("/web/intel/search", get(intel::search))
+        .route(
+            "/web/intel/layer/{name}",
+            // The flight layer is ~1 MB of JSON and Caddy doesn't compress.
+            get(layers::layer).layer(tower_http::compression::CompressionLayer::new()),
+        )
         .route("/web/local", get(local::get))
         .route_layer(from_fn_with_state(state.clone(), auth::require_session));
 
