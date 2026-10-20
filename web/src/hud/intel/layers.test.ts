@@ -45,6 +45,15 @@ describe("layerMarks", () => {
     expect(things.get("satellites:25544")?.kind).toBe("Space station");
   });
 
+  it("colours bases by service and briefs on the installation", () => {
+    const data = { generated_at: now, items: [["Q509549", "Fort George G. Meade", "army|military base|United States|United States Army", 39.107, -76.743, null, null, null, null], ["Q1", "Ramstein Air Base", "air|airbase|Germany|", 49.44, 7.6, null, null, null, null]] };
+    const { marks, things } = layerMarks("bases", data);
+    expect(marks.every((m) => m.shape === "base" && !m.pos)).toBe(true);
+    expect(things.get("bases:Q1")?.kind).toBe("Air force installation");
+    expect(things.get("bases:Q1")?.fields).toContainEqual(["Operator", "not recorded"]);
+    expect(thingPrompt(things.get("bases:Q509549")!)).toContain("military installation");
+  });
+
   it("colours temperature cells cold to hot", () => {
     expect(tempColor(-30)).toContain("hsl(240");
     expect(tempColor(40)).toContain("hsl(0");

@@ -6,7 +6,7 @@
 import { degreesLat, degreesLong, eciToGeodetic, gstime, propagate, twoline2satrec } from "satellite.js";
 import type { GlobeNode } from "./globe";
 
-export type LayerId = "flights" | "military" | "ships" | "satellites" | "climate";
+export type LayerId = "flights" | "military" | "ships" | "satellites" | "climate" | "bases";
 
 export const LAYERS: { id: LayerId; label: string; color: string; refreshMs: number }[] = [
   { id: "flights", label: "Flights", color: "#9fd3ff", refreshMs: 15 * 60_000 },
@@ -14,7 +14,16 @@ export const LAYERS: { id: LayerId; label: string; color: string; refreshMs: num
   { id: "ships", label: "Ships", color: "#4fd1c5", refreshMs: 10 * 60_000 },
   { id: "satellites", label: "Satellites", color: "#e9e4ff", refreshMs: 6 * 3600_000 },
   { id: "climate", label: "Temperature", color: "#ffd23f", refreshMs: 30 * 60_000 },
+  { id: "bases", label: "Bases", color: "#c084fc", refreshMs: 24 * 3600_000 },
 ];
+
+/** Base markers by service (the row's detail starts with one of these). */
+export const BRANCHES: Record<string, { label: string; color: string }> = {
+  air: { label: "Air force", color: "#7fb2ff" },
+  navy: { label: "Navy & marines", color: "#4fd1c5" },
+  army: { label: "Army & joint", color: "#b5e86b" },
+  space: { label: "Space", color: "#c084fc" },
+};
 
 export interface LayerData {
   generated_at: string;
@@ -95,9 +104,9 @@ export function layerMarks(id: LayerId, data: LayerData): { marks: GlobeNode[]; 
       weight: 0,
       label: thing.label,
       count: 1,
-      shape: id === "flights" || id === "military" ? "plane" : id === "ships" ? "ship" : id === "satellites" ? "sat" : "cell",
+      shape: id === "flights" || id === "military" ? "plane" : id === "ships" ? "ship" : id === "satellites" ? "sat" : id === "bases" ? "base" : "cell",
       track: id === "satellites" ? null : r[7],
-      pos: id === "climate" ? undefined : thing.pos,
+      pos: id === "climate" || id === "bases" ? undefined : thing.pos,
     });
     things.set(key, thing);
   }
@@ -110,6 +119,25 @@ function fromRow(id: LayerId, r: Row, t0: number): (Thing & { color: string; lab
   const moving = speed !== null && track !== null && speed > 0.5;
   const pos = (now: number): [number, number] => (moving ? deadReckon(lat, lon, track, speed, now - t0) : [lat, lon]);
   const reported = `${Math.max(0, Math.round((Date.now() - t0) / 60_000))} min ago`;
+  if (id === "bases") {
+    const [branch, kinds, country, operators] = detail.split("|");
+    const b = BRANCHES[branch] ?? BRANCHES.army;
+    return {
+      layer: id,
+      kind: `${b.label} installation`,
+      title: label,
+      fields: [
+        ["Service", b.label],
+        ["Type", kinds || "—"],
+        ["Country", country || "—"],
+        ["Operator", operators || "not recorded"],
+        ["Source", `Wikidata ${rid}`],
+      ],
+      pos,
+      color: b.color,
+      label: `${label} · ${b.label}`,
+    };
+  }
   if (id === "climate") {
     return {
       layer: id,
@@ -211,7 +239,9 @@ export function thingPrompt(t: Thing, now = Date.now()): string {
     .map(([k, v]) => `- ${k}: ${v}`)
     .join("\n");
   const ask =
-    t.layer === "climate"
+    t.layer === "bases"
+      ? "Brief me on this military installation: who operates it, the units, aircraft, ships or submarines based there, its role, and recent public news about it."
+      : t.layer === "climate"
       ? "Brief me on current weather and climate conditions here: how this compares with normal for the season, any extremes, warnings or longer-term trends."
       : "Identify it (operator, type, purpose, and route or destination where public), say where it is heading and whether anything about it is unusual, and give any recent news involving it.";
   return [

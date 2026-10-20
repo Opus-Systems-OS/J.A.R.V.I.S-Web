@@ -10,6 +10,8 @@
 //! - `ships`: AIS positions sampled from AISStream for a few seconds; needs
 //!   `AISSTREAM_API_KEY_FILE` (a free key), otherwise says so.
 //! - `climate`: Open-Meteo's current temperature and wind on a 10° grid.
+//! - `bases`: active military installations and spaceports on Wikidata,
+//!   sorted into air, navy, army and space by their class, operator and name.
 //!
 //! Each item is a row: `[id, label, detail, lat, lon, alt_m, speed_ms,
 //! track_deg, value]` (nulls where a source has nothing), except satellites,
@@ -17,7 +19,7 @@
 
 use crate::config::Profile;
 use crate::error::{Error, Result};
-use crate::intel::{fetch, json, now_rfc3339};
+use crate::intel::{fetch, fetch_within, json, now_rfc3339};
 use crate::AppState;
 use axum::extract::{Path, State};
 use axum::response::Response;
@@ -30,12 +32,13 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// Name, cache lifetime. The index is the slot in `Intel::layers`.
-pub const LAYERS: [(&str, Duration); 5] = [
+pub const LAYERS: [(&str, Duration); 6] = [
     ("satellites", Duration::from_secs(6 * 3600)),
     ("flights", Duration::from_secs(15 * 60)),
     ("military", Duration::from_secs(2 * 60)),
     ("ships", Duration::from_secs(10 * 60)),
     ("climate", Duration::from_secs(30 * 60)),
+    ("bases", Duration::from_secs(24 * 3600)),
 ];
 
 const KNOT: f64 = 0.514_444;
@@ -81,6 +84,7 @@ pub async fn layer(
             Some(key) => ships(key).await,
             None => Err("needs a free AISStream key (AISSTREAM_API_KEY_FILE)".to_owned()),
         },
+        "bases" => bases(http).await,
         _ => climate(http).await,
     };
     match fetched {
@@ -329,6 +333,110 @@ async fn ships(key: &SecretString) -> std::result::Result<Vec<Value>, String> {
         .collect())
 }
 
+// ---- military bases -----------------------------------------------------------
+
+/// Air bases, naval and submarine bases, military bases, space force bases
+/// and spaceports, still in use, with a position and an English name.
+const BASES_QUERY: &str = r#"SELECT ?item ?itemLabel (SAMPLE(?coord) AS ?c)
+  (GROUP_CONCAT(DISTINCT ?classLabel; separator=", ") AS ?kinds) (SAMPLE(?countryLabel) AS ?country)
+  (GROUP_CONCAT(DISTINCT ?opLabel; separator=", ") AS ?ops) WHERE {
+  VALUES ?class { wd:Q695850 wd:Q1324633 wd:Q331367 wd:Q245016 wd:Q18691599 wd:Q131520524 wd:Q194188 }
+  ?item wdt:P31 ?class ; wdt:P625 ?coord ; rdfs:label ?itemLabel . FILTER(LANG(?itemLabel) = "en")
+  FILTER NOT EXISTS { ?item wdt:P576|wdt:P3999 [] }
+  ?class rdfs:label ?classLabel . FILTER(LANG(?classLabel) = "en")
+  OPTIONAL { ?item wdt:P17 ?cty . ?cty rdfs:label ?countryLabel . FILTER(LANG(?countryLabel) = "en") }
+  OPTIONAL { ?item wdt:P137|wdt:P241 ?op . ?op rdfs:label ?opLabel . FILTER(LANG(?opLabel) = "en") }
+} GROUP BY ?item ?itemLabel"#;
+
+async fn bases(http: &reqwest::Client) -> std::result::Result<Vec<Value>, String> {
+    let url = reqwest::Url::parse_with_params(
+        "https://query.wikidata.org/sparql",
+        &[("query", BASES_QUERY)],
+    )
+    .map_err(|e| format!("url: {e}"))?;
+    let body = fetch_within(
+        http,
+        url.as_str(),
+        "application/sparql-results+json",
+        Duration::from_secs(45),
+    )
+    .await?;
+    parse_bases(&body)
+}
+
+/// air | navy | army | space, from the site's classes, operators and name.
+pub fn branch(name: &str, kinds: &str, ops: &str) -> &'static str {
+    // "Aerospace Forces" is an air force, not a space one.
+    let t = format!("{name} | {kinds} | {ops}")
+        .to_lowercase()
+        .replace("aerospace", "aero");
+    let has = |words: &[&str]| words.iter().any(|w| t.contains(w));
+    // Commonwealth shore establishments are named like ships.
+    let navy_name = ["INS ", "HMS ", "HMAS ", "HMNZS ", "HMCS ", "HMNB "]
+        .iter()
+        .any(|p| name.starts_with(p));
+    if has(&[
+        "space force",
+        "spaceport",
+        "cosmodrome",
+        "space center",
+        "space centre",
+        "launch site",
+        "space command",
+    ]) {
+        "space"
+    } else if navy_name
+        || has(&[
+            "naval",
+            "navy",
+            "submarine",
+            "marine corps",
+            "marines",
+            "coast guard",
+            "fleet",
+        ])
+    {
+        "navy"
+    } else if has(&[
+        "airbase",
+        "air base",
+        "air force",
+        "air station",
+        "raf ",
+        "air national guard",
+        "aero",
+    ]) {
+        "air"
+    } else {
+        "army"
+    }
+}
+
+/// SPARQL JSON → `[qid, name, "branch|kinds|country|operators", lat, lon, …]`.
+pub fn parse_bases(body: &[u8]) -> std::result::Result<Vec<Value>, String> {
+    let v: Value = serde_json::from_slice(body).map_err(|_| "not JSON".to_owned())?;
+    let s = |b: &Value, k: &str| b[k]["value"].as_str().unwrap_or("").to_owned();
+    Ok(v["results"]["bindings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|b| {
+            // WKT "Point(lon lat)".
+            let c = s(b, "c");
+            let mut ll = c.strip_prefix("Point(")?.strip_suffix(')')?.split(' ');
+            let (lon, lat) = (ll.next()?.parse().ok()?, ll.next()?.parse().ok()?);
+            let id = s(b, "item").rsplit('/').next()?.to_owned();
+            let (name, kinds, ops) = (s(b, "itemLabel"), s(b, "kinds"), s(b, "ops"));
+            let detail = format!(
+                "{}|{kinds}|{}|{ops}",
+                branch(&name, &kinds, &ops),
+                s(b, "country")
+            );
+            Some(row(&id, &name, &detail, lat, lon, None, None, None, None))
+        })
+        .collect())
+}
+
 // ---- climate -----------------------------------------------------------------
 
 async fn climate(http: &reqwest::Client) -> std::result::Result<Vec<Value>, String> {
@@ -419,6 +527,60 @@ mod tests {
         assert_eq!(rows[0][5], 3048.0);
         assert_eq!(rows[0][6], 51.4);
         assert_eq!(rows[1][5], Value::Null);
+    }
+
+    #[test]
+    fn bases_sort_into_branches() {
+        assert_eq!(
+            branch(
+                "Vandenberg Space Force Base",
+                "airbase, spaceport",
+                "United States Space Force"
+            ),
+            "space"
+        );
+        assert_eq!(
+            branch("Kubinka", "airbase", "Russian Aerospace Forces"),
+            "air"
+        );
+        assert_eq!(
+            branch("Naval Station Norfolk", "naval base, submarine base", ""),
+            "navy"
+        );
+        assert_eq!(
+            branch(
+                "Marine Corps Air Station Miramar",
+                "airbase",
+                "United States Marine Corps"
+            ),
+            "navy"
+        );
+        assert_eq!(
+            branch("Ramstein Air Base", "airbase", "United States Air Force"),
+            "air"
+        );
+        assert_eq!(branch("Fort Bragg", "military base", ""), "army");
+        assert_eq!(branch("INS Angre", "military base", ""), "navy");
+        assert_eq!(branch("Fort Collins Barracks", "military base", ""), "army");
+    }
+
+    #[test]
+    fn bases_parse_wkt_points() {
+        let body = json!({"results": {"bindings": [
+            {"item": {"value": "http://www.wikidata.org/entity/Q509549"}, "itemLabel": {"value": "Fort George G. Meade"},
+             "c": {"value": "Point(-76.7431 39.1069)"}, "kinds": {"value": "military base"},
+             "country": {"value": "United States"}, "ops": {"value": "United States Army"}},
+            {"item": {"value": "http://www.wikidata.org/entity/Q1"}, "itemLabel": {"value": "No point"}, "c": {"value": "junk"}}
+        ]}}).to_string();
+        let rows = parse_bases(body.as_bytes()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], "Q509549");
+        assert_eq!(
+            rows[0][2],
+            "army|military base|United States|United States Army"
+        );
+        assert_eq!(rows[0][3], 39.107);
+        assert_eq!(rows[0][4], -76.743);
     }
 
     #[test]

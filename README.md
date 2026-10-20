@@ -63,7 +63,8 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   The globe's live layers come the same way (`/web/intel/layer/{name}`,
   each cached for as long as its source allows): CelesTrak satellites
   (stations, brightest, military), OpenSky flights (cargo airlines picked
-  out), adsb.lol military aircraft, Open-Meteo temperature, and AISStream
+  out), adsb.lol military aircraft, Open-Meteo temperature, Wikidata's
+  military bases and spaceports (by service: air, navy, army, space), and AISStream
   ships. Ships need a free AISStream key in `AISSTREAM_API_KEY_FILE`; without
   it that layer just says so.
 - **Reverse runs in Jarvis's sandbox, never here.** The Reverse tab hands
