@@ -38,7 +38,7 @@ rpassword = "7"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 secrecy = "0.10"
 roxmltree = "0.20"
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
