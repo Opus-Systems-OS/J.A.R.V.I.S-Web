@@ -116,9 +116,11 @@ export function layerMarks(id: LayerId, data: LayerData): { marks: GlobeNode[]; 
 
 function fromRow(id: LayerId, r: Row, t0: number): (Thing & { color: string; label: string }) | null {
   const [rid, label, detail, lat, lon, alt, speed, track, value] = r;
+  // Ships carry their fix's age in seconds; the rest date from the snapshot.
+  const at = id === "ships" ? t0 - (value ?? 0) * 1000 : t0;
   const moving = speed !== null && track !== null && speed > 0.5;
-  const pos = (now: number): [number, number] => (moving ? deadReckon(lat, lon, track, speed, now - t0) : [lat, lon]);
-  const reported = `${Math.max(0, Math.round((Date.now() - t0) / 60_000))} min ago`;
+  const pos = (now: number): [number, number] => (moving ? deadReckon(lat, lon, track, speed, now - at) : [lat, lon]);
+  const reported = `${Math.max(0, Math.round((Date.now() - at) / 60_000))} min ago${moving ? " (position extrapolated since)" : ""}`;
   if (id === "bases") {
     const [branch, kinds, country, operators] = detail.split("|");
     const b = BRANCHES[branch] ?? BRANCHES.army;
@@ -165,7 +167,7 @@ function fromRow(id: LayerId, r: Row, t0: number): (Thing & { color: string; lab
         ["Type", kind ? `${kind[2]} (AIS ${code})` : detail ? `AIS type ${detail}` : "not reported yet"],
         ["Speed", fmt(speed === null ? null : speed / 0.514444, "kn", 1)],
         ["Course", fmt(track, "°")],
-        ["Reported", `${reported} (position extrapolated since)`],
+        ["Reported", reported],
       ],
       pos,
       color: kind?.[3] ?? "#4fd1c5",
@@ -184,7 +186,7 @@ function fromRow(id: LayerId, r: Row, t0: number): (Thing & { color: string; lab
       ["Altitude", fmt(alt === null ? null : alt / 0.3048, "ft")],
       ["Ground speed", fmt(speed === null ? null : speed / 0.514444, "kn")],
       ["Heading", fmt(track, "°")],
-      ["Reported", `${reported} (position extrapolated since)`],
+      ["Reported", reported],
       ["Source", military ? "adsb.lol (public ADS-B)" : "OpenSky Network"],
     ],
     pos,

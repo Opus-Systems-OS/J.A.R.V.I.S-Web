@@ -143,6 +143,7 @@ pub struct Intel {
     feed: tokio::sync::Mutex<Option<(Instant, Bytes)>>,
     searches: Mutex<HashMap<String, (Instant, Bytes)>>,
     pub(crate) layers: crate::layers::Slots,
+    pub(crate) fleet: Mutex<crate::layers::Fleet>,
 }
 
 pub(crate) fn json(body: Bytes) -> Response {
