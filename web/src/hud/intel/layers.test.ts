@@ -31,6 +31,16 @@ describe("layerMarks", () => {
     expect(things.get("ships:367")?.kind).toBe("Military vessel");
   });
 
+  it("dates and extrapolates a ship from its own fix, not the snapshot", () => {
+    const data = { generated_at: now, items: [["368", "SLOW BOAT", "", 0, 10, null, 10, 90, 600]] };
+    const ship = layerMarks("ships", data).things.get("ships:368")!;
+    expect(ship.fields).toContainEqual(["Reported", "10 min ago (position extrapolated since)"]);
+    // Due east at 10 m/s for 10 min = 6 km ≈ 0.054°.
+    const [lat, lon] = ship.pos(Date.parse(now))!;
+    expect(lat).toBeCloseTo(0, 6);
+    expect(lon).toBeCloseTo(10.054, 3);
+  });
+
   it("propagates a satellite from its TLE", () => {
     const iss = [
       "25544",

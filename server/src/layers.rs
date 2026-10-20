@@ -86,7 +86,12 @@ pub async fn layer(
             .await
             .and_then(|b| parse_adsb(&b)),
         "ships" => match &state.config.aisstream_key {
-            Some(_) => state.intel.fleet.lock().expect("fleet").rows(),
+            Some(_) => state
+                .intel
+                .fleet
+                .lock()
+                .expect("fleet")
+                .rows(Instant::now()),
             None => Err("needs a free AISStream key (AISSTREAM_API_KEY_FILE)".to_owned()),
         },
         "bases" => bases(http).await,
@@ -322,8 +327,9 @@ impl Fleet {
             .retain(|_, (_, at)| now.duration_since(*at) < AIS_STALE);
     }
 
-    /// The layer's rows; the detail is the AIS type code once one arrived.
-    fn rows(&self) -> std::result::Result<Vec<Value>, String> {
+    /// The layer's rows; the detail is the AIS type code once one arrived,
+    /// the value the fix's age in seconds (the page dates and extrapolates by it).
+    fn rows(&self, now: Instant) -> std::result::Result<Vec<Value>, String> {
         if self.positions.is_empty() {
             return Err(self
                 .error
@@ -333,7 +339,7 @@ impl Fleet {
         Ok(self
             .positions
             .iter()
-            .map(|(mmsi, ((lat, lon, sog, cog, name), _))| {
+            .map(|(mmsi, ((lat, lon, sog, cog, name), at))| {
                 let id = mmsi.to_string();
                 let label = if name.is_empty() { &id } else { name };
                 let kind = self
@@ -341,7 +347,8 @@ impl Fleet {
                     .get(mmsi)
                     .map(|(t, _)| t.to_string())
                     .unwrap_or_default();
-                row(&id, label, &kind, *lat, *lon, None, *sog, *cog, None)
+                let age = now.duration_since(*at).as_secs_f64().round();
+                row(&id, label, &kind, *lat, *lon, None, *sog, *cog, Some(age))
             })
             .collect())
     }
@@ -623,7 +630,10 @@ mod tests {
     #[test]
     fn fleet_rows_keep_latest_fix_and_type() {
         let (mut fleet, now) = (Fleet::default(), Instant::now());
-        assert_eq!(fleet.rows().unwrap_err(), "no AIS positions received yet");
+        assert_eq!(
+            fleet.rows(now).unwrap_err(),
+            "no AIS positions received yet"
+        );
         fleet
             .apply(&position(1, "EVER GIVEN  ", 33.0, 10.0, 90.0), now)
             .unwrap();
@@ -635,7 +645,7 @@ mod tests {
         let ship_type = json!({"MessageType": "ShipStaticData", "MetaData": {"MMSI": 1},
             "Message": {"ShipStaticData": {"Type": 70}}});
         fleet.apply(&ship_type, now).unwrap();
-        let mut rows = fleet.rows().unwrap();
+        let mut rows = fleet.rows(now + Duration::from_secs(600)).unwrap();
         rows.sort_by_key(|r| r[0].as_str().unwrap().to_owned());
         assert_eq!(
             rows,
@@ -649,9 +659,9 @@ mod tests {
                     null,
                     null,
                     null,
-                    null
+                    600.0
                 ]),
-                json!(["3", "3", "", 10.0, -118.25, null, 0.0, 0.0, null]),
+                json!(["3", "3", "", 10.0, -118.25, null, 0.0, 0.0, 600.0]),
             ]
         );
         assert_eq!(
@@ -667,9 +677,10 @@ mod tests {
         let t1 = t0 + AIS_STALE - Duration::from_secs(60);
         fleet.apply(&position(2, "NEW", 2.0, 5.0, 5.0), t1).unwrap();
         fleet.prune(t0 + AIS_STALE);
-        let rows = fleet.rows().unwrap();
+        let rows = fleet.rows(t0 + AIS_STALE).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0][1], "NEW");
+        assert_eq!(rows[0][8], 60.0);
     }
 
     #[test]
