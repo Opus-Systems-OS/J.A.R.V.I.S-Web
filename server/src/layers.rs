@@ -18,13 +18,11 @@
 //! track_deg, value]` (nulls where a source has nothing), except satellites,
 //! which are `[id, name, group, line1, line2]`.
 
-use crate::config::Profile;
 use crate::error::{Error, Result};
 use crate::intel::{fetch, fetch_within, json, now_rfc3339};
 use crate::AppState;
 use axum::extract::{Path, State};
 use axum::response::Response;
-use axum::Extension;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use secrecy::{ExposeSecret, SecretString};
@@ -55,12 +53,7 @@ const AIS_BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
 
 pub type Slots = [tokio::sync::Mutex<Option<(Instant, Bytes)>>; LAYERS.len()];
 
-pub async fn layer(
-    State(state): State<AppState>,
-    Extension(profile): Extension<Profile>,
-    Path(name): Path<String>,
-) -> Result<Response> {
-    crate::auth::require_full(&profile)?;
+pub async fn layer(State(state): State<AppState>, Path(name): Path<String>) -> Result<Response> {
     let i = LAYERS
         .iter()
         .position(|(n, _)| *n == name)

@@ -82,8 +82,8 @@ const template = (full: boolean) => html`
     </aside>
   </div>
   <div class="view" data-view="Fleet" id="view-fleet" hidden></div>
-  ${full ? html`<div class="view view-intel" data-view="Intel" id="view-intel" hidden></div>` : ""}
-  ${full ? html`<div class="view view-reverse" data-view="Reverse" id="view-reverse" hidden></div>` : ""}
+  <div class="view view-intel" data-view="Intel" id="view-intel" hidden></div>
+  <div class="view view-reverse" data-view="Reverse" id="view-reverse" hidden></div>
   ${full ? html`<div class="view" data-view="Systems" id="view-systems" hidden></div>` : ""}
   <div class="view" data-view="Usage" id="view-usage" hidden></div>
   <div class="view" data-view="Terminal" id="view-terminal" hidden></div>
@@ -202,7 +202,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     sideTurn = null;
     turn.done(abandon ? "" : turn.parts.join("\n\n"));
   };
-  // Intel (the owner's) loads its globe and map data only when first opened.
+  // Intel loads its globe and map data only when first opened.
   let intelView: import("./intel/view").IntelView | null = null;
   let intelLoading: Promise<void> | null = null;
   const showIntel = () => {
@@ -216,19 +216,17 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       if (current === "Intel") intelView?.show();
     });
   };
-  // Reverse (the owner's): REA in Jarvis's sandbox, one silent [rea] turn a run.
-  const reverseView = full
-    ? new ReverseView($("#view-reverse"), {
-        investigate: (prompt, attachments) => askSilently("rea", prompt, attachments),
-        stop: () => {
-          void jarvis.interrupt();
-          if (sideTurn?.tag === "rea") finishSide(true);
-        },
-        speak: speakLead,
-        sessionId: () => jarvis.session,
-        outputs: async (id) => (await get<{ data?: OutputFile[] }>(`sessions/${id}/files`)).data ?? [],
-      })
-    : null;
+  // Reverse: REA in Jarvis's sandbox, one silent [rea] turn a run.
+  const reverseView = new ReverseView($("#view-reverse"), {
+    investigate: (prompt, attachments) => askSilently("rea", prompt, attachments),
+    stop: () => {
+      void jarvis.interrupt();
+      if (sideTurn?.tag === "rea") finishSide(true);
+    },
+    speak: speakLead,
+    sessionId: () => jarvis.session,
+    outputs: async (id) => (await get<{ data?: OutputFile[] }>(`sessions/${id}/files`)).data ?? [],
+  });
   let current = "HUD";
   const openPanel = (tab: string) => {
     root.querySelectorAll<HTMLButtonElement>(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.tab === tab)));
@@ -238,10 +236,10 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     if (current === "Systems") systemsView?.hide();
     if (current === "Usage") usageView.hide();
     if (current === "Intel") intelView?.hide();
-    if (current === "Reverse") reverseView?.hide();
+    if (current === "Reverse") reverseView.hide();
     current = tab;
-    if (tab === "Intel" && full) showIntel();
-    if (tab === "Reverse") reverseView?.show();
+    if (tab === "Intel") showIntel();
+    if (tab === "Reverse") reverseView.show();
     if (tab === "Fleet") fleetView.show();
     if (tab === "Systems") systemsView?.show();
     if (tab === "Usage") usageView.show();
@@ -375,7 +373,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     openPanel,
     onEvent: (e) => {
       terminal.feed(e);
-      reverseView?.feed(e);
+      reverseView.feed(e);
     },
     onSilentReply: (text, tag) => {
       if (sideTurn && tag === sideTurn.tag) sideTurn.parts.push(text);
@@ -778,7 +776,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       fleetView.dispose();
       systemsView?.dispose();
       intelView?.dispose();
-      reverseView?.dispose();
+      reverseView.dispose();
       usageView.dispose();
       watch.stop();
     },

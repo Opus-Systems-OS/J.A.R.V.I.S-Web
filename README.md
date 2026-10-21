@@ -57,7 +57,7 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   Al Jazeera, USGS, NASA EONET, CAL FIRE, InciWeb, NWS) are fetched by
   `jarvis-web`, never the browser, and cached for 5 min. A search
   only fills the query of fixed hosts (Google News, Wikipedia). Links
-  must be http(s) and text is stripped of markup. Intel is the owner's.
+  must be http(s) and text is stripped of markup. Intel is every profile's.
   Search and Jarvis's briefs cover news and public-figure entries only:
   public role and record, never a private person's address, phone or family.
   The globe's live layers come the same way (`/web/intel/layer/{name}`,
@@ -80,7 +80,7 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   "Go deeper" is ticked. Reports say where embedded secrets are, never their
   values, and do not help bypass licensing, DRM or anti-cheat. Evidence is
   saved to the session's outputs as `rea-<run>-*.json`. Runs share the
-  conversation's budget. Reverse is the owner's.
+  conversation's budget. Reverse is every profile's, in that profile's own Jarvis.
 - **No fleet state here.** Sessions, usage and everything Jarvis knows are
   read live from the API.
 
