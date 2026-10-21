@@ -6,7 +6,7 @@
 import { degreesLat, degreesLong, eciToGeodetic, gstime, propagate, twoline2satrec } from "satellite.js";
 import type { GlobeNode } from "./globe";
 
-export type LayerId = "flights" | "military" | "ships" | "satellites" | "climate" | "bases";
+export type LayerId = "flights" | "military" | "ships" | "satellites" | "climate" | "bases" | "atc";
 
 export const LAYERS: { id: LayerId; label: string; color: string; refreshMs: number }[] = [
   { id: "flights", label: "Flights", color: "#9fd3ff", refreshMs: 15 * 60_000 },
@@ -15,6 +15,8 @@ export const LAYERS: { id: LayerId; label: string; color: string; refreshMs: num
   { id: "satellites", label: "Satellites", color: "#e9e4ff", refreshMs: 6 * 3600_000 },
   { id: "climate", label: "Temperature", color: "#ffd23f", refreshMs: 30 * 60_000 },
   { id: "bases", label: "Bases", color: "#c084fc", refreshMs: 24 * 3600_000 },
+  // Bundled (airports.json), never fetched.
+  { id: "atc", label: "ATC", color: "#ffd9a8", refreshMs: 24 * 3600_000 },
 ];
 
 /** Base markers by service (the row's detail starts with one of these). */
@@ -42,6 +44,8 @@ export interface Thing {
   kind: string;
   title: string;
   fields: [string, string][];
+  /** [text, url]: opened in a new tab (nothing is fetched or embedded). */
+  links?: [string, string][];
   pos(now: number): [number, number] | null;
 }
 
@@ -91,7 +95,7 @@ export function layerMarks(id: LayerId, data: LayerData): { marks: GlobeNode[]; 
   const things = new Map<string, Thing>();
   for (const item of data.items) {
     const key = `${id}:${(item as unknown[])[0]}`;
-    const thing = id === "satellites" ? satellite(item as Sat) : fromRow(id, item as Row, t0);
+    const thing = id === "satellites" ? satellite(item as Sat) : id === "atc" ? airport(item as Airport) : fromRow(id, item as Row, t0);
     if (!thing) continue;
     const at = thing.pos(Date.now());
     if (!at) continue;
@@ -104,9 +108,9 @@ export function layerMarks(id: LayerId, data: LayerData): { marks: GlobeNode[]; 
       weight: 0,
       label: thing.label,
       count: 1,
-      shape: id === "flights" || id === "military" ? "plane" : id === "ships" ? "ship" : id === "satellites" ? "sat" : id === "bases" ? "base" : "cell",
-      track: id === "satellites" ? null : r[7],
-      pos: id === "climate" || id === "bases" ? undefined : thing.pos,
+      shape: id === "flights" || id === "military" ? "plane" : id === "ships" ? "ship" : id === "satellites" || id === "atc" ? "sat" : id === "bases" ? "base" : "cell",
+      track: id === "flights" || id === "military" ? r[7] : null,
+      pos: id === "climate" || id === "bases" || id === "atc" ? undefined : thing.pos,
     });
     things.set(key, thing);
   }
@@ -195,6 +199,27 @@ function fromRow(id: LayerId, r: Row, t0: number): (Thing & { color: string; lab
   };
 }
 
+/** `[icao, iata, name, city, country, lat, lon, elevation_ft]` (OurAirports, large airports). */
+type Airport = [string, string, string, string, string, number, number, number | null];
+
+function airport([icao, iata, name, city, country, lat, lon, elev]: Airport): Thing & { color: string; label: string } {
+  return {
+    layer: "atc",
+    kind: "Airport",
+    title: name,
+    fields: [
+      ["ICAO · IATA", `${icao}${iata ? ` · ${iata}` : ""}`],
+      ["City", city || "—"],
+      ["Country", country],
+      ["Elevation", fmt(elev, "ft")],
+    ],
+    links: [["Listen to ATC live (LiveATC)", `https://www.liveatc.net/search/?icao=${encodeURIComponent(icao)}`]],
+    pos: () => [lat, lon],
+    color: "#ffd9a8",
+    label: `${iata || icao} · ${city || name}`,
+  };
+}
+
 function satellite([id, name, group, l1, l2]: Sat): (Thing & { color: string; label: string }) | null {
   let rec;
   try {
@@ -241,7 +266,9 @@ export function thingPrompt(t: Thing, now = Date.now()): string {
     .map(([k, v]) => `- ${k}: ${v}`)
     .join("\n");
   const ask =
-    t.layer === "bases"
+    t.layer === "atc"
+      ? "Brief me on this airport right now: delays, ground stops or closures, weather affecting operations, notable traffic or incidents, and recent news."
+      : t.layer === "bases"
       ? "Brief me on this military installation: who operates it, the units, aircraft, ships or submarines based there, its role, and recent public news about it."
       : t.layer === "climate"
       ? "Brief me on current weather and climate conditions here: how this compares with normal for the season, any extremes, warnings or longer-term trends."

@@ -64,6 +64,14 @@ describe("layerMarks", () => {
     expect(thingPrompt(things.get("bases:Q509549")!)).toContain("military installation");
   });
 
+  it("puts airports on the globe with a LiveATC link", () => {
+    const data = { generated_at: now, items: [["KLAX", "LAX", "Los Angeles International Airport", "Los Angeles", "US", 33.943, -118.408, 125]] };
+    const { marks, things } = layerMarks("atc", data);
+    expect(marks[0]).toMatchObject({ lat: 33.943, lon: -118.408, shape: "sat", track: null });
+    expect(things.get("atc:KLAX")?.links).toEqual([["Listen to ATC live (LiveATC)", "https://www.liveatc.net/search/?icao=KLAX"]]);
+    expect(thingPrompt(things.get("atc:KLAX")!)).toContain("airport");
+  });
+
   it("colours temperature cells cold to hot", () => {
     expect(tempColor(-30)).toContain("hsl(240");
     expect(tempColor(40)).toContain("hsl(0");
