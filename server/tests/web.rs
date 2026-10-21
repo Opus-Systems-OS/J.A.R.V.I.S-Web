@@ -1359,3 +1359,63 @@ async fn location_needs_an_unlock_and_a_real_place() {
         );
     }
 }
+
+#[tokio::test]
+async fn watches_need_an_unlock_and_are_each_profiles_own() {
+    let h = harness().await;
+    let r = send(&h, bff(Method::GET, "/web/watches", None, None)).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let walker = unlock(&h).await;
+    let powers = unlock_as(&h, "powers", POWERS_PASSWORD).await;
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/watches",
+            Some(&walker),
+            Some(serde_json::json!({ "term": "fire", "place": "Calabasas", "lat": 34.16, "lon": -118.64, "radius_km": 80 })),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let id = r.json()["id"].as_i64().unwrap();
+    let r = send(&h, bff(Method::GET, "/web/watches", Some(&powers), None)).await;
+    assert_eq!(r.json()["watches"].as_array().unwrap().len(), 0);
+    let path = format!("/web/watches/{id}/remove");
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            &path,
+            Some(&powers),
+            Some(serde_json::json!({})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "not his");
+    // An item is new once per profile.
+    let seen = || Some(serde_json::json!({ "items": ["a1", "b2"] }));
+    let r = send(
+        &h,
+        bff(Method::POST, "/web/watches/seen", Some(&walker), seen()),
+    )
+    .await;
+    assert_eq!(r.json()["new"], serde_json::json!(["a1", "b2"]));
+    let r = send(
+        &h,
+        bff(Method::POST, "/web/watches/seen", Some(&walker), seen()),
+    )
+    .await;
+    assert_eq!(r.json()["new"], serde_json::json!([]));
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            &path,
+            Some(&walker),
+            Some(serde_json::json!({})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+}

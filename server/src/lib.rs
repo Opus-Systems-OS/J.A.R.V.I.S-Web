@@ -22,6 +22,7 @@ pub mod local;
 pub mod mic;
 pub mod reminders;
 pub mod request_id;
+pub mod watches;
 
 use axum::http::{header, HeaderName, HeaderValue};
 use axum::middleware::{from_fn, from_fn_with_state};
@@ -150,6 +151,9 @@ pub fn app(state: AppState) -> Router {
             // The flight layer is ~1 MB of JSON and Caddy doesn't compress.
             get(layers::layer).layer(tower_http::compression::CompressionLayer::new()),
         )
+        .route("/web/watches", get(watches::list).post(watches::create))
+        .route("/web/watches/{id}/remove", post(watches::remove))
+        .route("/web/watches/seen", post(watches::seen))
         .route("/web/local", get(local::get))
         .route_layer(from_fn_with_state(state.clone(), auth::require_session));
 

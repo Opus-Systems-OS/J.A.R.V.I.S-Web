@@ -10,6 +10,7 @@ import { compactBriefing, withLocalWeather, type Briefing } from "./briefing";
 import { compactJobs, type Job } from "./jobs";
 import * as location from "./location";
 import * as reminders from "./reminders";
+import * as watch from "./intel/watch";
 
 export interface ToolDef {
   type: "custom";
@@ -127,6 +128,41 @@ const TOOLS: ToolDef[] = [
     input_schema: {
       type: "object",
       properties: { filter: { type: "string", description: "A word to match, e.g. California" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "watch_add",
+    description:
+      "Add to his Intel watchlist: the HUD then tells him aloud when a new story matches (checked every 5 minutes, and at " +
+      "unlock for anything that came in while he was away). Give a term (a word in the headline, or a category: fire, " +
+      "violence, conflict, unrest, disaster, weather, politics, health, economy), a place to watch near ('me' for where he " +
+      "is), or both: 'tell me about fires near me' is term fire, near me. Confirm back what you set.",
+    input_schema: {
+      type: "object",
+      properties: {
+        term: { type: "string", description: "A word to match, e.g. Ukraine, or a category, e.g. fire" },
+        near: { type: "string", description: "A place, e.g. Calabasas or Austin, TX, or 'me'" },
+        radius_mi: { type: "number", description: "Miles around near; 50 if not said" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "watch_list",
+    description: "His Intel watchlist: each watch's id and what it watches for.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    type: "custom",
+    name: "watch_remove",
+    description: "Take a watch off his Intel watchlist, by the id watch_list gave.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "number" } },
+      required: ["id"],
       additionalProperties: false,
     },
   },
@@ -282,6 +318,22 @@ export async function runTool(
         if (!Number.isInteger(id)) return { content: "id must be a reminder id from list_reminders", is_error: true };
         await reminders.cancel(id);
         return { content: `cancelled reminder ${id}` };
+      }
+      case "watch_add": {
+        const w = await watch.resolve(args);
+        if (typeof w === "string") return { content: w, is_error: true };
+        const added = await watch.add(w);
+        return { content: JSON.stringify({ added: { id: added.id, watching: watch.describe(added) } }) };
+      }
+      case "watch_list": {
+        const list = await watch.list();
+        return { content: JSON.stringify({ watches: list.map((w) => ({ id: w.id, watching: watch.describe(w) })) }) };
+      }
+      case "watch_remove": {
+        const id = Number(args.id);
+        if (!Number.isInteger(id)) return { content: "id must be a watch id from watch_list", is_error: true };
+        await watch.remove(id);
+        return { content: `removed watch ${id}` };
       }
       case "intel_feed": {
         const [{ toStory }, feed] = await Promise.all([import("./intel/model"), webGet<IntelFeed>("intel/feed")]);
