@@ -403,7 +403,7 @@ fn dedupe_by_url(events: Vec<(Value, u64)>) -> Vec<Value> {
         }
     }
     let mut out: Vec<(Value, u64)> = best.into_values().collect();
-    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out.sort_by_key(|x| std::cmp::Reverse(x.1));
     out.into_iter().map(|(r, _)| r).collect()
 }
 
