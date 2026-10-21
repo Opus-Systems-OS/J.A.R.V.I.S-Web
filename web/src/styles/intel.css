@@ -311,6 +311,75 @@
   box-shadow: var(--glow-soft);
 }
 
+/* Watchlist */
+.intel-watch {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.intel-watch-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.intel-watch-empty {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-faint);
+}
+
+.intel-watch-chip {
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--line-strong);
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.intel-watch-chip::after {
+  content: " ×";
+  color: var(--text-faint);
+}
+
+.intel-watch-chip:hover,
+.intel-watch-chip:focus-visible {
+  border-color: var(--accent-3);
+}
+
+.intel-watch-add {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.intel-watch-add input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--line);
+  background: rgba(14, 6, 2, 0.6);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.intel-watch-add input:focus {
+  outline: none;
+  border-color: var(--line-strong);
+  box-shadow: var(--glow-soft);
+}
+
+.intel-row[data-watched="true"] .intel-row-title::before {
+  content: "◆ ";
+  color: var(--accent-3);
+}
+
 .intel-dossier {
   flex: 1;
   min-height: 0;

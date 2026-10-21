@@ -1,7 +1,7 @@
 //! SQLite for what this site owns: unlocked browser sessions, failed unlock
 //! attempts, the honeypot's trap hits and bans, the credit ledger — the Anthropic balance you typed after a
 //! top-up and your warning thresholds — the reminders Jarvis sets, and when
-//! you last opened the HUD. Fleet state, usage and everything
+//! you last opened the HUD, and the Intel watchlist. Fleet state, usage and everything
 //! Jarvis knows are read live through the API — never stored here. Times
 //! are unix seconds.
 
@@ -62,6 +62,24 @@ CREATE TABLE IF NOT EXISTS trap_hits (
   ua      TEXT NOT NULL,
   banned  INTEGER NOT NULL      -- 0 = logged only (an unlocked browser)
 );
+-- Intel watchlist (`watches.rs`): a word, a place and radius, or both.
+CREATE TABLE IF NOT EXISTS watches (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile     TEXT NOT NULL,
+  term        TEXT,
+  place       TEXT,
+  lat         REAL,
+  lon         REAL,
+  radius_km   REAL,
+  created_at  INTEGER NOT NULL
+);
+-- Feed items already announced for a profile, so no two HUDs say one twice.
+CREATE TABLE IF NOT EXISTS watch_alerts (
+  profile  TEXT NOT NULL,
+  item     TEXT NOT NULL,
+  at       INTEGER NOT NULL,
+  PRIMARY KEY (profile, item)
+);
 -- The bait passphrase in the fake `.env`: made once, kept across restarts.
 CREATE TABLE IF NOT EXISTS honey (
   id      INTEGER PRIMARY KEY CHECK (id = 1),
@@ -103,6 +121,18 @@ pub struct Reminder {
     pub id: i64,
     pub text: String,
     pub due_at: i64,
+    pub created_at: i64,
+}
+
+/// One entry on a profile's Intel watchlist.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Watch {
+    pub id: i64,
+    pub term: Option<String>,
+    pub place: Option<String>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub radius_km: Option<f64>,
     pub created_at: i64,
 }
 
@@ -448,6 +478,90 @@ impl Db {
         })
     }
 
+    // ---- watchlist ---------------------------------------------------------------
+
+    pub fn watches(&self, profile: &str) -> Result<Vec<Watch>> {
+        self.with(|c| {
+            c.prepare(
+                "SELECT id, term, place, lat, lon, radius_km, created_at FROM watches
+                 WHERE profile = ?1 ORDER BY id",
+            )?
+            .query_map([profile], |r| {
+                Ok(Watch {
+                    id: r.get(0)?,
+                    term: r.get(1)?,
+                    place: r.get(2)?,
+                    lat: r.get(3)?,
+                    lon: r.get(4)?,
+                    radius_km: r.get(5)?,
+                    created_at: r.get(6)?,
+                })
+            })?
+            .collect()
+        })
+    }
+
+    /// `None` when `profile` already has `max` watches.
+    pub fn add_watch(&self, profile: &str, w: &Watch, max: i64) -> Result<Option<i64>> {
+        self.with(|c| {
+            let n: i64 = c.query_row(
+                "SELECT COUNT(*) FROM watches WHERE profile = ?1",
+                [profile],
+                |r| r.get(0),
+            )?;
+            if n >= max {
+                return Ok(None);
+            }
+            c.execute(
+                "INSERT INTO watches (profile, term, place, lat, lon, radius_km, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    profile,
+                    w.term,
+                    w.place,
+                    w.lat,
+                    w.lon,
+                    w.radius_km,
+                    w.created_at
+                ],
+            )?;
+            Ok(Some(c.last_insert_rowid()))
+        })
+    }
+
+    pub fn remove_watch(&self, profile: &str, id: i64) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM watches WHERE id = ?1 AND profile = ?2",
+                params![id, profile],
+            )
+            .map(|n| n == 1)
+        })
+    }
+
+    /// Record `items` as announced for `profile`; the ones that weren't yet.
+    pub fn mark_alerted(&self, profile: &str, items: &[String]) -> Result<Vec<String>> {
+        let now = now();
+        self.with(|c| {
+            // Feeds forget a story within days; so can we.
+            c.execute(
+                "DELETE FROM watch_alerts WHERE at < ?1",
+                [now - 14 * 86_400],
+            )?;
+            let mut fresh = Vec::new();
+            for item in items {
+                if c.execute(
+                    "INSERT OR IGNORE INTO watch_alerts (profile, item, at) VALUES (?1, ?2, ?3)",
+                    params![profile, item, now],
+                )? == 1
+                {
+                    fresh.push(item.clone());
+                }
+            }
+            Ok(fresh)
+        })
+    }
+
     // ---- visits ----------------------------------------------------------------
 
     /// When `profile` last opened the HUD (unix seconds), and now is the new
@@ -521,6 +635,31 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watches_are_per_profile_and_alerts_said_once() {
+        let db = Db::in_memory().unwrap();
+        let w = Watch {
+            id: 0,
+            term: Some("fire".into()),
+            place: None,
+            lat: None,
+            lon: None,
+            radius_km: None,
+            created_at: now(),
+        };
+        let id = db.add_watch("walker", &w, 2).unwrap().unwrap();
+        db.add_watch("walker", &w, 2).unwrap().unwrap();
+        assert_eq!(db.add_watch("walker", &w, 2).unwrap(), None, "full");
+        assert!(db.watches("powers").unwrap().is_empty());
+        assert!(!db.remove_watch("powers", id).unwrap(), "not his");
+        assert!(db.remove_watch("walker", id).unwrap());
+        assert_eq!(db.watches("walker").unwrap().len(), 1);
+        let ids = vec!["a".to_owned(), "b".to_owned()];
+        assert_eq!(db.mark_alerted("walker", &ids).unwrap(), ids);
+        assert!(db.mark_alerted("walker", &ids).unwrap().is_empty());
+        assert_eq!(db.mark_alerted("powers", &ids).unwrap(), ids);
+    }
 
     #[test]
     fn reminders_are_pending_until_spoken_or_cancelled() {

@@ -17,6 +17,7 @@ import { leadLine, link, renderBrief } from "../brief";
 import { scannerUrl } from "./geo";
 import { localZone } from "../location";
 import { Globe, type GlobeNode } from "./globe";
+import * as watch from "./watch";
 import { LAYERS, layerMarks, thingPrompt, type LayerData, type LayerId, type Thing } from "./layers";
 import { ago, CATEGORIES, cluster, COLOR, toStory, type Category, type Entry, type Feed, type IntelNode, type SearchResult, type Story } from "./model";
 
@@ -64,6 +65,14 @@ const SKELETON = html`
         <input id="intel-q" autocomplete="off" spellcheck="false" maxlength="80" placeholder="Search a name, place or event" aria-label="Search" />
         <button class="btn-primary btn-small" type="submit">Search</button>
       </form>
+      <section class="intel-watch" aria-label="Watchlist">
+        <div class="intel-watch-list" id="intel-watch-list"></div>
+        <form class="intel-watch-add" id="intel-watch-add">
+          <input id="intel-watch-term" autocomplete="off" spellcheck="false" maxlength="80" placeholder="Watch a word" aria-label="Watch a word or category" />
+          <input id="intel-watch-near" autocomplete="off" spellcheck="false" maxlength="80" placeholder="near (place, or me)" aria-label="Within 50 miles of" />
+          <button class="btn-ghost btn-small" type="submit">Watch</button>
+        </form>
+      </section>
       <div class="intel-dossier" id="intel-dossier"></div>
     </section>
   </div>`;
@@ -133,6 +142,7 @@ export class IntelView {
   private readonly layerNote = new Map<LayerId, string>();
   private readonly things = new Map<string, Thing>();
   private layerTimer = 0;
+  private watches: watch.Watch[] = [];
 
   constructor(
     root: HTMLElement,
@@ -154,14 +164,20 @@ export class IntelView {
       const q = this.$<HTMLInputElement>("#intel-q").value.trim();
       if (q) void this.runSearch(q);
     };
+    this.$<HTMLFormElement>("#intel-watch-add").onsubmit = (e) => {
+      e.preventDefault();
+      void this.addWatch();
+    };
     this.renderChips();
     this.renderLayers();
     this.renderIdle();
+    void this.loadWatches();
   }
 
   show() {
     this.visible = true;
     this.globe.start();
+    void this.loadWatches(); // Jarvis may have changed it by voice
     if (Date.now() - this.loadedAt > REFRESH_MS) void this.load();
     window.clearInterval(this.timer);
     this.timer = window.setInterval(() => void this.load(), REFRESH_MS);
@@ -272,6 +288,7 @@ export class IntelView {
     li.style.setProperty("--cat", COLOR[s.category]);
     li.tabIndex = 0;
     li.dataset.located = String(!!s.where);
+    if (this.watches.some((w) => watch.matches(w, s))) li.dataset.watched = "true";
     const title = el("span", "intel-row-title", s.title);
     const meta = el("span", "intel-row-meta", [s.source, s.where?.name, ago(s.published)].filter(Boolean).join(" · "));
     li.append(el("span", "intel-row-dot"), title, meta);
@@ -281,6 +298,63 @@ export class IntelView {
       if (e.key === "Enter") open();
     };
     return li;
+  }
+
+  // ---- watchlist ---------------------------------------------------------------
+
+  private async loadWatches() {
+    try {
+      this.watches = await watch.list();
+    } catch {
+      /* shown empty; the next add retries */
+    }
+    this.renderWatches();
+  }
+
+  private renderWatches() {
+    const box = this.$("#intel-watch-list");
+    if (!this.watches.length) {
+      box.replaceChildren(el("span", "intel-watch-empty", "Watchlist empty · Jarvis says when a new story matches"));
+    } else {
+      box.replaceChildren(
+        ...this.watches.map((w) => {
+          const b = el<HTMLButtonElement>("button", "intel-watch-chip", watch.describe(w));
+          b.type = "button";
+          b.title = "Stop watching";
+          b.onclick = async () => {
+            try {
+              await watch.remove(w.id);
+            } catch {
+              /* gone already */
+            }
+            await this.loadWatches();
+          };
+          return b;
+        }),
+      );
+    }
+    if (this.stories.length) this.rebuild();
+  }
+
+  private async addWatch() {
+    const term = this.$<HTMLInputElement>("#intel-watch-term");
+    const near = this.$<HTMLInputElement>("#intel-watch-near");
+    const w = await watch.resolve({ term: term.value, near: near.value });
+    if (typeof w === "string") {
+      near.setCustomValidity(w.replace(/^I don't know where he is yet.*/, "Jarvis doesn't know where you are yet"));
+      near.reportValidity();
+      near.oninput = () => near.setCustomValidity("");
+      return;
+    }
+    try {
+      await watch.add(w);
+      term.value = near.value = "";
+    } catch (e) {
+      term.setCustomValidity(e instanceof ApiError ? e.message : "Couldn't save that watch");
+      term.reportValidity();
+      term.oninput = () => term.setCustomValidity("");
+    }
+    await this.loadWatches();
   }
 
   private renderTicker() {

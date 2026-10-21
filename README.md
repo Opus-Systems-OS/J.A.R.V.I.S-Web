@@ -71,6 +71,10 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   Radio is links only: an airport opens its LiveATC page and a US news node
   its state's Broadcastify scanner listings, in a new tab. Neither site allows
   re-streaming its audio, so nothing is played or fetched here.
+  Each profile has a watchlist (`/web/watches`): a word, a place and radius,
+  or both. The HUD holding the mic checks the feed every 5 min and speaks new
+  matches; what was said is recorded here (14 days) so no two HUDs repeat it
+  and the next unlock catches up on what came in while none was open.
 - **Reverse runs in Jarvis's sandbox, never here.** The Reverse tab hands
   Jarvis a target (an uploaded file, a link, or a path in his sandbox) and a
   question as one silent `[rea]` turn; he installs

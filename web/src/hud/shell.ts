@@ -20,6 +20,7 @@ import { compactOps, tabsFor } from "./tools";
 import { Attachments } from "./attach";
 import { ReverseView } from "./reverse/view";
 import { agentName, JobWatch, type Job } from "./jobs";
+import { WatchAlerts } from "./intel/watch";
 import { ReminderWatch } from "./reminders";
 import { Transcript, type OutputFile } from "./transcript";
 import { isoSeconds, UsageView } from "./usage";
@@ -669,6 +670,14 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       speaker.say(line);
     },
   });
+  const watchAlerts = new WatchAlerts({
+    speaks: () => lease.held,
+    announce: (line) => {
+      transcript.note(line);
+      lastReplyAsked = false;
+      speaker.say(line);
+    },
+  });
   const jobWatch = new JobWatch({
     onJobs: renderJobs,
     onAnnounce: (line) => {
@@ -752,6 +761,9 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     // Then anything that came due while no HUD was open.
     void reminderWatch.check();
     reminderWatch.start();
+    // And watchlist news from while he was away.
+    void watchAlerts.check();
+    watchAlerts.start();
   });
 
   return {
@@ -759,6 +771,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       timers.forEach((t) => window.clearInterval(t));
       jobWatch.stop();
       reminderWatch.stop();
+      watchAlerts.stop();
       stopWhere();
       cancelAnimationFrame(raf);
       window.removeEventListener("keydown", onKey);
