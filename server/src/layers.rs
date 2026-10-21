@@ -19,6 +19,8 @@
 //!   mass violence) from the last two hours of its 15-minute exports, placed
 //!   at city level, one per article. Machine coding is noisy; the dossier
 //!   says so.
+//! - `cams`: public traffic cameras (Caltrans, Maryland CHART, NYC DOT);
+//!   see `cams.rs`, which also relays each camera's still or stream.
 //!
 //! Each item is a row: `[id, label, detail, lat, lon, alt_m, speed_ms,
 //! track_deg, value]` (nulls where a source has nothing), except satellites,
@@ -38,7 +40,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// Name, cache lifetime. The index is the slot in `Intel::layers`.
-pub const LAYERS: [(&str, Duration); 8] = [
+pub const LAYERS: [(&str, Duration); 9] = [
     ("satellites", Duration::from_secs(6 * 3600)),
     ("flights", Duration::from_secs(15 * 60)),
     ("military", Duration::from_secs(2 * 60)),
@@ -47,6 +49,7 @@ pub const LAYERS: [(&str, Duration); 8] = [
     ("bases", Duration::from_secs(24 * 3600)),
     ("air", Duration::from_secs(30 * 60)),
     ("conflict", Duration::from_secs(15 * 60)),
+    ("cams", Duration::from_secs(3600)),
 ];
 
 const KNOT: f64 = 0.514_444;
@@ -99,6 +102,10 @@ pub async fn layer(State(state): State<AppState>, Path(name): Path<String>) -> R
         "bases" => bases(http).await,
         "air" => air(http).await,
         "conflict" => conflict(http).await,
+        "cams" => crate::cams::list(http).await.map(|(rows, index)| {
+            crate::cams::remember(&state, index);
+            rows
+        }),
         _ => climate(http).await,
     };
     match fetched {
@@ -130,7 +137,7 @@ fn round(x: f64, places: i32) -> f64 {
 
 /// `[id, label, detail, lat, lon, alt_m, speed_ms, track_deg, value]`.
 #[allow(clippy::too_many_arguments)]
-fn row(
+pub(crate) fn row(
     id: &str,
     label: &str,
     detail: &str,

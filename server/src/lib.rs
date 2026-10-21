@@ -11,6 +11,7 @@
 
 pub mod auth;
 pub mod bff;
+pub mod cams;
 pub mod config;
 pub mod credits;
 pub mod db;
@@ -151,6 +152,8 @@ pub fn app(state: AppState) -> Router {
             // The flight layer is ~1 MB of JSON and Caddy doesn't compress.
             get(layers::layer).layer(tower_http::compression::CompressionLayer::new()),
         )
+        .route("/web/intel/cam/{id}/still", get(cams::still))
+        .route("/web/intel/cam/{id}/hls/{file}", get(cams::hls))
         .route("/web/watches", get(watches::list).post(watches::create))
         .route("/web/watches/{id}/remove", post(watches::remove))
         .route("/web/watches/seen", post(watches::seen))

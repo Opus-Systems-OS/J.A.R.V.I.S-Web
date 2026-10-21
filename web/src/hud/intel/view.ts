@@ -223,6 +223,8 @@ export class IntelView {
   private readonly things = new Map<string, Thing>();
   private layerTimer = 0;
   private watches: watch.Watch[] = [];
+  /** Stops the camera playing in the dossier, if one is. */
+  private stopCam: (() => void) | null = null;
   /** The dossier is showing "This view": a feed refresh leaves it up. */
   private regionShown = false;
 
@@ -261,6 +263,8 @@ export class IntelView {
     this.visible = true;
     this.globe.start();
     void this.loadWatches(); // Jarvis may have changed it by voice
+    const cam = this.selectedKey ? this.things.get(this.selectedKey) : undefined;
+    if (cam?.camera && this.selectedKey) this.renderThing(this.selectedKey, cam);
     if (Date.now() - this.loadedAt > REFRESH_MS) void this.load();
     window.clearInterval(this.timer);
     this.timer = window.setInterval(() => void this.load(), REFRESH_MS);
@@ -272,6 +276,8 @@ export class IntelView {
 
   hide() {
     this.visible = false;
+    // A hidden tab streams nothing; showing it again reopens the camera.
+    this.closeCam();
     this.globe.stop();
     window.clearInterval(this.timer);
     window.clearInterval(this.layerTimer);
@@ -534,6 +540,7 @@ export class IntelView {
     d.append(head);
     const dl = el("dl", "intel-facts");
     for (const [k, v] of t.fields) dl.append(el("dt", "", k), el("dd", "", v));
+    if (t.camera) d.append(this.camBlock(t.camera));
     d.append(dl);
     for (const [text, url] of t.links ?? []) d.append(this.linkLine(url, text));
     d.append(this.briefBlock(key, "Analyze with Jarvis", () => thingPrompt(t)));
@@ -575,7 +582,93 @@ export class IntelView {
   }
 
   private dossier(): HTMLElement {
+    this.closeCam();
     return this.$("#intel-dossier");
+  }
+
+  private closeCam() {
+    this.stopCam?.();
+    this.stopCam = null;
+  }
+
+  /** A camera's live stream (native HLS on Safari, hls.js elsewhere), or
+   * its still refreshed every 5 s; video that fails falls back to the still. */
+  private camBlock(c: NonNullable<Thing["camera"]>): HTMLElement {
+    const box = el("div", "intel-cam");
+    const tag = el("span", "intel-cam-tag");
+    const base = `/web/intel/cam/${encodeURIComponent(c.id)}`;
+    let stopped = false;
+    let timer = 0;
+    let video: HTMLVideoElement | null = null;
+    let hls: { destroy(): void } | null = null;
+    const endVideo = () => {
+      hls?.destroy();
+      hls = null;
+      if (video) {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+        video.remove();
+        video = null;
+      }
+    };
+    const still = () => {
+      endVideo();
+      if (!c.still) {
+        tag.textContent = "OFFLINE";
+        box.replaceChildren(el("p", "intel-hint", "The stream isn't answering right now, and this camera has no still image."), tag);
+        return;
+      }
+      tag.textContent = "STILL · 5 S";
+      const img = el<HTMLImageElement>("img");
+      img.alt = "Latest image from this camera";
+      const load = () => (img.src = `${base}/still?t=${Date.now()}`);
+      img.onerror = () => {
+        tag.textContent = "NO IMAGE";
+      };
+      img.onload = () => {
+        tag.textContent = "STILL · 5 S";
+      };
+      load();
+      timer = window.setInterval(load, 5000);
+      box.replaceChildren(img, tag);
+    };
+    const fail = () => {
+      if (!stopped) still();
+    };
+    if (c.live) {
+      tag.textContent = "LIVE";
+      const v = el<HTMLVideoElement>("video");
+      video = v;
+      v.muted = true; // no audio on these, and the HUD stays silent
+      v.autoplay = true;
+      v.playsInline = true;
+      v.controls = true;
+      v.onerror = fail;
+      const src = `${base}/hls/playlist.m3u8`;
+      box.replaceChildren(v, tag);
+      if (v.canPlayType("application/vnd.apple.mpegurl")) v.src = src;
+      else
+        import("hls.js/light")
+          .then(({ default: Hls }) => {
+            if (stopped || !video) return;
+            if (!Hls.isSupported()) return fail();
+            const h = new Hls();
+            hls = h;
+            h.on(Hls.Events.ERROR, (_e, d) => {
+              if (d.fatal) fail();
+            });
+            h.loadSource(src);
+            h.attachMedia(v);
+          })
+          .catch(fail);
+    } else still();
+    this.stopCam = () => {
+      stopped = true;
+      window.clearInterval(timer);
+      endVideo();
+    };
+    return box;
   }
 
   private renderIdle() {

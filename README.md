@@ -70,6 +70,13 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   airports (OurAirports, bundled) with a link out to LiveATC, and AISStream
   ships. Ships need a free AISStream key in `AISSTREAM_API_KEY_FILE`; without
   it that layer just says so.
+  Traffic cameras come from three agencies' public feeds: Caltrans (stills,
+  and live video on most), Maryland CHART (live video) and NYC DOT (stills).
+  The page asks for a camera by its id; `jarvis-web` looks it up and relays
+  that camera's still or HLS stream from the agency's own host (checked
+  again after redirects, playlists must be relative), never storing or
+  re-hosting it. Video is muted. The agencies' terms on relaying streams
+  haven't been checked.
   Radio is links only: an airport opens its LiveATC page and a US news node
   its state's Broadcastify scanner listings, in a new tab. Neither site allows
   re-streaming its audio, so nothing is played or fetched here.
