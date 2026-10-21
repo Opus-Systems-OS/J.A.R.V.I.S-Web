@@ -442,6 +442,7 @@ export class IntelView {
     const dl = el("dl", "intel-facts");
     for (const [k, v] of t.fields) dl.append(el("dt", "", k), el("dd", "", v));
     d.append(dl);
+    if (t.url) d.append(link(t.url, "Read the report"));
     d.append(this.briefBlock(key, "Analyze with Jarvis", () => thingPrompt(t)));
   }
 

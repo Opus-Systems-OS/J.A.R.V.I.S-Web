@@ -38,6 +38,8 @@ rpassword = "7"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 secrecy = "0.10"
 roxmltree = "0.20"
+# Already in the tree (tower-http gzip); inflates GDELT's zipped exports.
+flate2 = "1"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 
 [dev-dependencies]

@@ -10,10 +10,17 @@
 //! - `ships`: AIS positions sampled from AISStream for a few seconds; needs
 //!   `AISSTREAM_API_KEY_FILE` (a free key), otherwise says so.
 //! - `climate`: Open-Meteo's current temperature and wind on a 10° grid.
+//! - `air`: Open-Meteo's current US AQI and PM2.5, on a 10° grid worldwide
+//!   and a 2° one over the contiguous US.
+//! - `conflict`: GDELT's machine-coded violent events (assault, fighting,
+//!   mass violence) from the last two hours of its 15-minute exports, placed
+//!   at city level, one per article. Machine coding is noisy; the dossier
+//!   says so.
 //!
 //! Each item is a row: `[id, label, detail, lat, lon, alt_m, speed_ms,
 //! track_deg, value]` (nulls where a source has nothing), except satellites,
-//! which are `[id, name, group, line1, line2]`.
+//! which are `[id, name, group, line1, line2]`, and conflict, whose rows
+//! carry the article's link as a tenth field.
 
 use crate::error::{Error, Result};
 use crate::intel::{fetch, json, now_rfc3339};
@@ -28,12 +35,14 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// Name, cache lifetime. The index is the slot in `Intel::layers`.
-pub const LAYERS: [(&str, Duration); 5] = [
+pub const LAYERS: [(&str, Duration); 7] = [
     ("satellites", Duration::from_secs(6 * 3600)),
     ("flights", Duration::from_secs(15 * 60)),
     ("military", Duration::from_secs(2 * 60)),
     ("ships", Duration::from_secs(10 * 60)),
     ("climate", Duration::from_secs(30 * 60)),
+    ("air", Duration::from_secs(30 * 60)),
+    ("conflict", Duration::from_secs(15 * 60)),
 ];
 
 const KNOT: f64 = 0.514_444;
@@ -74,6 +83,8 @@ pub async fn layer(State(state): State<AppState>, Path(name): Path<String>) -> R
             Some(key) => ships(key).await,
             None => Err("needs a free AISStream key (AISSTREAM_API_KEY_FILE)".to_owned()),
         },
+        "air" => air(http).await,
+        "conflict" => conflict(http).await,
         _ => climate(http).await,
     };
     match fetched {
@@ -175,6 +186,265 @@ pub fn parse_tle(text: &str, group: &str) -> Vec<(String, Value)> {
             (id, v)
         })
         .collect()
+}
+
+// ---- air quality ---------------------------------------------------------------
+
+async fn air(http: &reqwest::Client) -> std::result::Result<Vec<Value>, String> {
+    let world = grid((-50..=70).step_by(10), (-180..180).step_by(10));
+    let us = grid((26..=48).step_by(2), (-124..=-68).step_by(2));
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    for (lats, lons) in [world, us] {
+        let url = format!(
+            "https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lats}&longitude={lons}&current=us_aqi,pm2_5"
+        );
+        match fetch(http, &url, "application/json").await {
+            Ok(body) => out.extend(parse_air(&body)?),
+            Err(e) => errors.push(e),
+        }
+    }
+    if out.is_empty() && !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    Ok(out)
+}
+
+/// Every pair of the two ranges, as Open-Meteo's comma lists.
+fn grid(
+    lats: impl Iterator<Item = i32> + Clone,
+    lons: impl Iterator<Item = i32> + Clone,
+) -> (String, String) {
+    let pairs: Vec<(i32, i32)> = lats
+        .flat_map(|a| lons.clone().map(move |o| (a, o)))
+        .collect();
+    let join = |f: fn(&(i32, i32)) -> i32| {
+        pairs
+            .iter()
+            .map(|p| f(p).to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    (join(|p| p.0), join(|p| p.1))
+}
+
+/// Like `parse_open_meteo`: label `AQI 59`, detail the PM2.5 in µg/m³,
+/// value the US AQI. Cells with no reading (open ocean) are left out.
+pub fn parse_air(body: &[u8]) -> std::result::Result<Vec<Value>, String> {
+    let v: Value = serde_json::from_slice(body).map_err(|_| "not JSON".to_owned())?;
+    let places = match &v {
+        Value::Array(a) => a.clone(),
+        other => vec![other.clone()],
+    };
+    Ok(places
+        .iter()
+        .filter_map(|p| {
+            let (lat, lon) = (p["latitude"].as_f64()?, p["longitude"].as_f64()?);
+            let aqi = p["current"]["us_aqi"].as_f64()?;
+            let pm = p["current"]["pm2_5"]
+                .as_f64()
+                .map(|x| format!("{x:.1}"))
+                .unwrap_or_default();
+            Some(row(
+                &format!("{lat:.1},{lon:.1}"),
+                &format!("AQI {aqi:.0}"),
+                &pm,
+                lat,
+                lon,
+                None,
+                None,
+                None,
+                Some(aqi),
+            ))
+        })
+        .collect())
+}
+
+// ---- conflict ------------------------------------------------------------------
+
+const GDELT: &str = "https://data.gdeltproject.org/gdeltv2/";
+/// Two hours of 15-minute exports.
+const GDELT_SLOTS: i64 = 8;
+const GDELT_MAX_CSV: u64 = 40 * 1024 * 1024;
+
+async fn conflict(http: &reqwest::Client) -> std::result::Result<Vec<Value>, String> {
+    let last = fetch(http, &format!("{GDELT}lastupdate.txt"), "text/plain").await?;
+    let latest = gdelt_latest(&String::from_utf8_lossy(&last)).ok_or("no export listed")?;
+    let mut events = Vec::new();
+    let mut errors = Vec::new();
+    // The newest export is listed a little before it is up: a 404 there is normal.
+    for slot in gdelt_slots(latest, GDELT_SLOTS) {
+        let url = format!("{GDELT}{slot}.export.CSV.zip");
+        match fetch(http, &url, "application/zip")
+            .await
+            .and_then(|z| unzip_one(&z))
+        {
+            Ok(csv) => events.extend(parse_gdelt(&csv)),
+            Err(e) => errors.push(format!("{slot}: {e}")),
+        }
+    }
+    if events.is_empty() && errors.len() as i64 == GDELT_SLOTS {
+        return Err(errors.join("; "));
+    }
+    Ok(dedupe_by_url(events))
+}
+
+/// `lastupdate.txt`'s export line → its `YYYYMMDDHHMMSS` slot.
+pub fn gdelt_latest(text: &str) -> Option<i64> {
+    let url = text.lines().find(|l| l.contains(".export.CSV.zip"))?;
+    let name = url.rsplit('/').next()?;
+    let stamp = name.split('.').next()?;
+    (stamp.len() == 14 && stamp.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| stamp.parse().ok())
+        .flatten()
+}
+
+/// `n` slots back from `latest` (inclusive), 15 minutes apart, as stamps.
+pub fn gdelt_slots(latest: i64, n: i64) -> Vec<String> {
+    use time::{Date, Month, PrimitiveDateTime, Time};
+    let d = |i: u32, len: u32| ((latest / 10i64.pow(14 - i - len)) % 10i64.pow(len)) as u32;
+    let Some(t) = Month::try_from(d(4, 2) as u8)
+        .ok()
+        .and_then(|m| Date::from_calendar_date(d(0, 4) as i32, m, d(6, 2) as u8).ok())
+        .zip(Time::from_hms(d(8, 2) as u8, d(10, 2) as u8, d(12, 2) as u8).ok())
+        .map(|(date, time)| PrimitiveDateTime::new(date, time))
+    else {
+        return Vec::new();
+    };
+    (0..n)
+        .map(|i| {
+            let s = t - time::Duration::minutes(15 * i);
+            format!(
+                "{:04}{:02}{:02}{:02}{:02}{:02}",
+                s.year(),
+                s.month() as u8,
+                s.day(),
+                s.hour(),
+                s.minute(),
+                s.second()
+            )
+        })
+        .collect()
+}
+
+/// The first file of a zip archive (GDELT's hold one), inflated.
+pub fn unzip_one(zip: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    use std::io::Read;
+    let u16_at = |i: usize| {
+        zip.get(i..i + 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]) as usize)
+    };
+    if zip.get(0..4) != Some(&[0x50, 0x4b, 0x03, 0x04]) {
+        return Err("not a zip".into());
+    }
+    let (method, name, extra) = (u16_at(8), u16_at(26), u16_at(28));
+    let start = 30 + name.ok_or("short zip")? + extra.ok_or("short zip")?;
+    let data = zip.get(start..).ok_or("short zip")?;
+    let mut out = Vec::new();
+    match method {
+        Some(8) => flate2::read::DeflateDecoder::new(data)
+            .take(GDELT_MAX_CSV)
+            .read_to_end(&mut out)
+            .map_err(|_| "bad deflate".to_owned())?,
+        _ => return Err("unsupported zip".into()),
+    };
+    Ok(out)
+}
+
+/// CAMEO root codes kept: assault, fight, mass violence.
+const VIOLENT: [&str; 3] = ["18", "19", "20"];
+
+/// GDELT 2.0 event rows (61 tab-separated columns) → violent root events
+/// placed at a city (`ActionGeo_Type` 3 or 4), as rows with the article
+/// link tenth and its mention count as the value.
+pub fn parse_gdelt(csv: &[u8]) -> Vec<(Value, u64)> {
+    String::from_utf8_lossy(csv)
+        .lines()
+        .filter_map(|line| {
+            let c: Vec<&str> = line.split('\t').collect();
+            if c.len() < 61
+                || c[25] != "1"
+                || !VIOLENT.contains(&c[28])
+                || !matches!(c[51], "3" | "4")
+            {
+                return None;
+            }
+            let (lat, lon) = (c[56].parse::<f64>().ok()?, c[57].parse::<f64>().ok()?);
+            let url = c[60].trim();
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                return None;
+            }
+            let place = c[52].trim();
+            let mentions = c[31].parse::<u64>().unwrap_or(1);
+            let mut r = row(
+                c[0],
+                &headline(url).unwrap_or_else(|| place.to_owned()),
+                place,
+                lat,
+                lon,
+                None,
+                None,
+                None,
+                c[28].parse::<f64>().ok(),
+            );
+            r.as_array_mut()?.push(Value::String(url.to_owned()));
+            Some((r, mentions))
+        })
+        .collect()
+}
+
+/// One event per article, the most mentioned; then the most mentioned first.
+fn dedupe_by_url(events: Vec<(Value, u64)>) -> Vec<Value> {
+    let mut best: HashMap<String, (Value, u64)> = HashMap::new();
+    for (r, n) in events {
+        let url = r[9].as_str().unwrap_or_default().to_owned();
+        if best.get(&url).is_none_or(|(_, m)| n > *m) {
+            best.insert(url, (r, n));
+        }
+    }
+    let mut out: Vec<(Value, u64)> = best.into_values().collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out.into_iter().map(|(r, _)| r).collect()
+}
+
+/// A headline from an article's slug, `…/retired-soldier-shoots-youth-dead/articleshow/1350.cms`
+/// → "Retired soldier shoots youth dead". `None` when no segment reads as words.
+pub fn headline(url: &str) -> Option<String> {
+    let path = url.split(['?', '#']).next()?;
+    let path = path.split("://").nth(1)?.split_once('/')?.1;
+    path.rsplit('/').find_map(|seg| {
+        let seg = seg
+            .trim_end_matches(".html")
+            .trim_end_matches(".htm")
+            .trim_end_matches(".cms")
+            .trim_end_matches(".php")
+            .trim_end_matches(".ece");
+        let words: Vec<&str> = seg
+            .split(['-', '_', '+'])
+            .filter(|w| !w.is_empty())
+            .filter(|w| !(w.chars().any(|c| c.is_ascii_digit()) && w.len() > 3))
+            // A date in front ("10-21-…") is not part of the headline.
+            .skip_while(|w| w.bytes().all(|b| b.is_ascii_digit()))
+            .collect();
+        if words.len() < 3 || !words.iter().all(|w| w.chars().all(char::is_alphanumeric)) {
+            return None;
+        }
+        let text = words.join(" ");
+        let mut c = text.chars();
+        let first = c.next()?;
+        Some(clip_words(
+            &format!("{}{}", first.to_uppercase(), c.as_str()),
+            120,
+        ))
+    })
+}
+
+fn clip_words(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let cut: String = s.chars().take(max).collect();
+    format!("{}…", cut.rsplit_once(' ').map_or(cut.as_str(), |x| x.0))
 }
 
 // ---- aircraft ------------------------------------------------------------------
@@ -373,6 +643,96 @@ pub fn parse_open_meteo(body: &[u8]) -> std::result::Result<Vec<Value>, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gdelt_row(id: &str, root: &str, geo: &str, url: &str, mentions: &str) -> String {
+        let mut c = vec![""; 61];
+        c[0] = id;
+        c[25] = "1";
+        c[28] = root;
+        c[31] = mentions;
+        c[51] = geo;
+        c[52] = "Indore, Madhya Pradesh, India";
+        c[56] = "22.7179";
+        c[57] = "75.8333";
+        c[60] = url;
+        c.join("\t")
+    }
+
+    #[test]
+    fn gdelt_keeps_violent_city_events_one_per_article() {
+        let url = "https://example.com/city/indore/retired-soldier-shoots-indore-youth-dead/articleshow/135079862.cms";
+        let csv = [
+            gdelt_row("1", "19", "4", url, "2"),
+            gdelt_row("2", "19", "4", url, "9"),
+            gdelt_row("3", "04", "4", "https://example.com/a-b-c", "5"), // consult: not violent
+            gdelt_row("4", "18", "1", "https://example.com/x-y-z", "5"), // country only
+            gdelt_row("5", "20", "3", "javascript:alert(1)", "5"),
+        ]
+        .join("\n");
+        let rows = dedupe_by_url(parse_gdelt(csv.as_bytes()));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], "2", "the most mentioned");
+        assert_eq!(rows[0][1], "Retired soldier shoots indore youth dead");
+        assert_eq!(rows[0][2], "Indore, Madhya Pradesh, India");
+        assert_eq!(rows[0][8], 19.0);
+        assert_eq!(rows[0][9], url);
+    }
+
+    #[test]
+    fn headlines_come_from_slugs() {
+        assert_eq!(
+            headline("https://katu.com/news/local/vancouver-attempted-murder-suspect-identified")
+                .as_deref(),
+            Some("Vancouver attempted murder suspect identified")
+        );
+        assert_eq!(headline("https://www.el-balad.com/17059512"), None);
+        assert_eq!(
+            headline("https://e.com/10-21-mayor-claims-seat-despite-appeal").as_deref(),
+            Some("Mayor claims seat despite appeal")
+        );
+        assert_eq!(headline("https://e.com/"), None);
+    }
+
+    #[test]
+    fn gdelt_slots_step_back_across_midnight() {
+        let latest = gdelt_latest(
+            "50371 25ae http://data.gdeltproject.org/gdeltv2/20261021001500.export.CSV.zip\n66221 3aeb http://data.gdeltproject.org/gdeltv2/20261021001500.mentions.CSV.zip",
+        )
+        .unwrap();
+        assert_eq!(
+            gdelt_slots(latest, 3),
+            ["20261021001500", "20261021000000", "20261020234500"]
+        );
+        assert_eq!(gdelt_latest("nothing here"), None);
+    }
+
+    #[test]
+    fn single_file_zips_inflate() {
+        use std::io::Write;
+        let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(b"hello\tworld\n").unwrap();
+        let body = enc.finish().unwrap();
+        let mut zip = vec![0x50, 0x4b, 0x03, 0x04];
+        zip.extend([0u8; 4]); // version, flags
+        zip.extend(8u16.to_le_bytes()); // deflate
+        zip.extend([0u8; 16]); // time, date, crc, sizes
+        zip.extend(1u16.to_le_bytes()); // name length
+        zip.extend(0u16.to_le_bytes()); // extra length
+        zip.push(b'a');
+        zip.extend(body);
+        assert_eq!(unzip_one(&zip).unwrap(), b"hello\tworld\n");
+        assert!(unzip_one(b"<html>404</html>").is_err());
+    }
+
+    #[test]
+    fn air_cells_skip_missing_readings() {
+        let body = br#"[{"latitude":34.2,"longitude":-118.6,"current":{"us_aqi":59,"pm2_5":9.9}},{"latitude":0,"longitude":-150,"current":{"us_aqi":null}}]"#;
+        let rows = parse_air(body).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][1], "AQI 59");
+        assert_eq!(rows[0][2], "9.9");
+        assert_eq!(rows[0][8], 59.0);
+    }
 
     #[test]
     fn tle_triplets_parse() {

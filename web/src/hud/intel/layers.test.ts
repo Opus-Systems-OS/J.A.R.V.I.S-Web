@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deadReckon, layerMarks, tempColor, thingPrompt } from "./layers";
+import { aqiBand, deadReckon, layerMarks, tempColor, thingPrompt } from "./layers";
 
 const now = new Date().toISOString();
 
@@ -48,5 +48,28 @@ describe("layerMarks", () => {
   it("colours temperature cells cold to hot", () => {
     expect(tempColor(-30)).toContain("hsl(240");
     expect(tempColor(40)).toContain("hsl(0");
+  });
+});
+
+describe("air and conflict layers", () => {
+  const at = { generated_at: "2026-10-21T05:00:00Z" };
+  it("colours air by the EPA band and keeps cells still", () => {
+    expect(aqiBand(42)[1]).toBe("Good");
+    expect(aqiBand(151)[1]).toBe("Unhealthy");
+    expect(aqiBand(900)[1]).toBe("Hazardous");
+    const { marks, things } = layerMarks("air", { ...at, items: [["34.2,-118.6", "AQI 159", "61.2", 34.2, -118.6, null, null, null, 159]] });
+    expect(marks[0].color).toBe("#ff0000");
+    expect(marks[0].pos).toBeUndefined();
+    expect(things.get("air:34.2,-118.6")?.fields[1]).toEqual(["PM2.5", "61.2 µg/m³"]);
+  });
+
+  it("links a conflict event to its report and asks Jarvis to check it", () => {
+    const url = "https://example.com/manipur-violence-escalates";
+    const { marks, things } = layerMarks("conflict", { ...at, items: [["9", "Manipur violence escalates", "Imphal, Manipur, India", 24.8, 93.9, null, null, null, 19, url]] });
+    expect(marks[0].shape).toBe("dot");
+    const t = things.get("conflict:9")!;
+    expect(t.kind).toBe("Fighting");
+    expect(t.url).toBe(url);
+    expect(thingPrompt(t)).toContain(url);
   });
 });
