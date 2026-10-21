@@ -63,9 +63,14 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   The globe's live layers come the same way (`/web/intel/layer/{name}`,
   each cached for as long as its source allows): CelesTrak satellites
   (stations, brightest, military), OpenSky flights (cargo airlines picked
-  out), adsb.lol military aircraft, Open-Meteo temperature, and AISStream
+  out), adsb.lol military aircraft, Open-Meteo temperature, Wikidata's
+  military bases and spaceports (by service: air, navy, army, space), large
+  airports (OurAirports, bundled) with a link out to LiveATC, and AISStream
   ships. Ships need a free AISStream key in `AISSTREAM_API_KEY_FILE`; without
   it that layer just says so.
+  Radio is links only: an airport opens its LiveATC page and a US news node
+  its state's Broadcastify scanner listings, in a new tab. Neither site allows
+  re-streaming its audio, so nothing is played or fetched here.
 - **Reverse runs in Jarvis's sandbox, never here.** The Reverse tab hands
   Jarvis a target (an uploaded file, a link, or a path in his sandbox) and a
   question as one silent `[rea]` turn; he installs

@@ -14,6 +14,7 @@
 import { ApiError, webGet } from "../../api";
 import { html, setHtml } from "../../html";
 import { leadLine, link, renderBrief } from "../brief";
+import { scannerUrl } from "./geo";
 import { localZone } from "../location";
 import { Globe, type GlobeNode } from "./globe";
 import { LAYERS, layerMarks, thingPrompt, type LayerData, type LayerId, type Thing } from "./layers";
@@ -340,7 +341,10 @@ export class IntelView {
   private async loadLayer(id: LayerId) {
     this.layerAt.set(id, Date.now());
     try {
-      const data = await webGet<LayerData>(`intel/layer/${id}`);
+      const data: LayerData =
+        id === "atc"
+          ? { generated_at: new Date().toISOString(), items: (await import("./airports.json")).default as unknown[] }
+          : await webGet<LayerData>(`intel/layer/${id}`);
       if (!this.layerOn.has(id)) return; // switched off while loading
       const { marks, things } = layerMarks(id, data);
       this.globe.setLayer(id, marks);
@@ -351,6 +355,12 @@ export class IntelView {
       this.layerNote.set(id, e instanceof ApiError ? e.message : "unavailable");
     }
     this.renderLayers();
+  }
+
+  private linkLine(url: string, text: string): HTMLElement {
+    const p = el("p", "intel-listen");
+    p.append(link(url, text));
+    return p;
   }
 
   private renderThing(key: string, t: Thing) {
@@ -368,6 +378,7 @@ export class IntelView {
     const dl = el("dl", "intel-facts");
     for (const [k, v] of t.fields) dl.append(el("dt", "", k), el("dd", "", v));
     d.append(dl);
+    for (const [text, url] of t.links ?? []) d.append(this.linkLine(url, text));
     d.append(this.briefBlock(key, "Analyze with Jarvis", () => thingPrompt(t)));
   }
 
@@ -449,6 +460,8 @@ export class IntelView {
       el("span", "intel-coords", lat !== null && lon !== null ? `${Math.abs(lat).toFixed(3)}°${lat >= 0 ? "N" : "S"} ${Math.abs(lon).toFixed(3)}°${lon >= 0 ? "E" : "W"}` : "position unknown"),
     );
     d.append(head);
+    const scanners = scannerUrl(name);
+    if (scanners) d.append(this.linkLine(scanners, "Police & fire scanners for this state (Broadcastify)"));
     d.append(this.briefBlock(key, "Analyze with Jarvis", () => eventPrompt(name, lat, lon, stories)));
     d.append(el("h4", "intel-section", "Reports"));
     const ul = el("ul", "intel-reports");

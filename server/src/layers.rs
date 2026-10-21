@@ -7,16 +7,19 @@
 //! - `flights`: every airborne aircraft OpenSky sees. Anonymous OpenSky is
 //!   400 credits a day and a world query costs 4, hence 15 minutes.
 //! - `military`: adsb.lol's military aircraft (public ADS-B, worldwide).
-//! - `ships`: AIS positions sampled from AISStream for a few seconds; needs
-//!   `AISSTREAM_API_KEY_FILE` (a free key), otherwise says so.
+//! - `ships`: every ship heard on one long-lived AISStream connection in
+//!   the last half hour; needs `AISSTREAM_API_KEY_FILE` (a free key),
+//!   otherwise says so.
 //! - `climate`: Open-Meteo's current temperature and wind on a 10° grid.
+//! - `bases`: active military installations and spaceports on Wikidata,
+//!   sorted into air, navy, army and space by their class, operator and name.
 //!
 //! Each item is a row: `[id, label, detail, lat, lon, alt_m, speed_ms,
 //! track_deg, value]` (nulls where a source has nothing), except satellites,
 //! which are `[id, name, group, line1, line2]`.
 
 use crate::error::{Error, Result};
-use crate::intel::{fetch, json, now_rfc3339};
+use crate::intel::{fetch, fetch_within, json, now_rfc3339};
 use crate::AppState;
 use axum::extract::{Path, State};
 use axum::response::Response;
@@ -28,20 +31,25 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// Name, cache lifetime. The index is the slot in `Intel::layers`.
-pub const LAYERS: [(&str, Duration); 5] = [
+pub const LAYERS: [(&str, Duration); 6] = [
     ("satellites", Duration::from_secs(6 * 3600)),
     ("flights", Duration::from_secs(15 * 60)),
     ("military", Duration::from_secs(2 * 60)),
-    ("ships", Duration::from_secs(10 * 60)),
+    ("ships", Duration::from_secs(30)),
     ("climate", Duration::from_secs(30 * 60)),
+    ("bases", Duration::from_secs(24 * 3600)),
 ];
 
 const KNOT: f64 = 0.514_444;
 const FOOT: f64 = 0.3048;
 const AIS_URL: &str = "wss://stream.aisstream.io/v0/stream";
-/// How long to listen to AIS, and when to stop early.
-const AIS_SAMPLE: Duration = Duration::from_secs(12);
-const AIS_MAX_SHIPS: usize = 5000;
+/// Ships not heard from in this long are dropped; at most this many kept.
+const AIS_STALE: Duration = Duration::from_secs(30 * 60);
+const AIS_MAX_SHIPS: usize = 50_000;
+const AIS_PRUNE_EVERY: Duration = Duration::from_secs(60);
+const AIS_IDLE: Duration = Duration::from_secs(60);
+const AIS_BACKOFF_MIN: Duration = Duration::from_secs(5);
+const AIS_BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
 
 pub type Slots = [tokio::sync::Mutex<Option<(Instant, Bytes)>>; LAYERS.len()];
 
@@ -71,9 +79,15 @@ pub async fn layer(State(state): State<AppState>, Path(name): Path<String>) -> R
             .await
             .and_then(|b| parse_adsb(&b)),
         "ships" => match &state.config.aisstream_key {
-            Some(key) => ships(key).await,
+            Some(_) => state
+                .intel
+                .fleet
+                .lock()
+                .expect("fleet")
+                .rows(Instant::now()),
             None => Err("needs a free AISStream key (AISSTREAM_API_KEY_FILE)".to_owned()),
         },
+        "bases" => bases(http).await,
         _ => climate(http).await,
     };
     match fetched {
@@ -243,81 +257,267 @@ pub fn parse_adsb(body: &[u8]) -> std::result::Result<Vec<Value>, String> {
 /// A ship's latest: lat, lon, speed m/s, course, name.
 type Fix = (f64, f64, Option<f64>, Option<f64>, String);
 
-/// Listen to AISStream for `AIS_SAMPLE` and keep each ship's latest
-/// position; the detail is its AIS type code when a static report arrived.
-async fn ships(key: &SecretString) -> std::result::Result<Vec<Value>, String> {
-    use tokio_tungstenite::tungstenite::Message;
-    let (mut ws, _) = tokio::time::timeout(
-        Duration::from_secs(8),
-        tokio_tungstenite::connect_async(AIS_URL),
-    )
-    .await
-    .map_err(|_| "timed out".to_owned())?
-    .map_err(|_| "unreachable".to_owned())?;
-    let subscribe = json!({
-        "APIKey": key.expose_secret(),
-        "BoundingBoxes": [[[-90, -180], [90, 180]]],
-        "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
-    });
-    ws.send(Message::text(subscribe.to_string()))
-        .await
-        .map_err(|_| "subscribe failed".to_owned())?;
+/// Every ship AISStream has reported lately, kept by [`spawn_ais`]'s one
+/// long-lived connection: MMSI → latest fix, and MMSI → AIS type code (static
+/// reports come every few minutes, so these fill in over time).
+#[derive(Default)]
+pub struct Fleet {
+    positions: HashMap<u64, (Fix, Instant)>,
+    types: HashMap<u64, (u64, Instant)>,
+    /// Why the stream last failed; shown only while there are no ships.
+    error: Option<String>,
+}
 
-    let mut positions: HashMap<u64, Fix> = HashMap::new();
-    let mut types: HashMap<u64, u64> = HashMap::new();
-    let deadline = tokio::time::Instant::now() + AIS_SAMPLE;
-    while positions.len() < AIS_MAX_SHIPS {
-        let Ok(Some(Ok(msg))) = tokio::time::timeout_at(deadline, ws.next()).await else {
-            break;
-        };
-        let v: Value = match &msg {
-            Message::Text(t) => serde_json::from_str(t).unwrap_or(Value::Null),
-            Message::Binary(b) => serde_json::from_slice(b).unwrap_or(Value::Null),
-            _ => continue,
-        };
+impl Fleet {
+    /// Take one AISStream message; `Err` is the stream's own `{"error": …}`.
+    fn apply(&mut self, v: &Value, now: Instant) -> std::result::Result<(), String> {
         if let Some(e) = v["error"].as_str() {
             return Err(format!("AISStream: {e}"));
         }
         let meta = &v["MetaData"];
         let Some(mmsi) = meta["MMSI"].as_u64() else {
-            continue;
+            return Ok(());
         };
         match v["MessageType"].as_str() {
             Some("PositionReport") => {
                 let (Some(lat), Some(lon)) =
                     (meta["latitude"].as_f64(), meta["longitude"].as_f64())
                 else {
-                    continue;
+                    return Ok(());
                 };
                 // AIS's "not available" is 91 / 181; 102.3 kn and 360° likewise.
                 if lat.abs() > 90.0 || lon.abs() > 180.0 {
-                    continue;
+                    return Ok(());
                 }
                 let p = &v["Message"]["PositionReport"];
                 let sog = p["Sog"].as_f64().filter(|s| *s < 102.0).map(|s| s * KNOT);
                 let cog = p["Cog"].as_f64().filter(|c| *c < 360.0);
                 let name = meta["ShipName"].as_str().unwrap_or("").trim().to_owned();
-                positions.insert(mmsi, (lat, lon, sog, cog, name));
+                // shortcut: at the cap new ships wait for the next prune; raise AIS_MAX_SHIPS if it is hit.
+                if self.positions.len() < AIS_MAX_SHIPS || self.positions.contains_key(&mmsi) {
+                    self.positions
+                        .insert(mmsi, ((lat, lon, sog, cog, name), now));
+                }
             }
             Some("ShipStaticData") => {
                 if let Some(t) = v["Message"]["ShipStaticData"]["Type"].as_u64() {
-                    types.insert(mmsi, t);
+                    if self.types.len() < AIS_MAX_SHIPS || self.types.contains_key(&mmsi) {
+                        self.types.insert(mmsi, (t, now));
+                    }
                 }
             }
             _ => {}
         }
+        self.error = None;
+        Ok(())
     }
-    let _ = ws.close(None).await;
-    if positions.is_empty() {
-        return Err("no AIS positions received (is the key valid?)".to_owned());
+
+    /// Forget ships not heard from in `AIS_STALE`.
+    fn prune(&mut self, now: Instant) {
+        self.positions
+            .retain(|_, (_, at)| now.duration_since(*at) < AIS_STALE);
+        self.types
+            .retain(|_, (_, at)| now.duration_since(*at) < AIS_STALE);
     }
-    Ok(positions
+
+    /// The layer's rows; the detail is the AIS type code once one arrived,
+    /// the value the fix's age in seconds (the page dates and extrapolates by it).
+    fn rows(&self, now: Instant) -> std::result::Result<Vec<Value>, String> {
+        if self.positions.is_empty() {
+            return Err(self
+                .error
+                .clone()
+                .unwrap_or_else(|| "no AIS positions received yet".to_owned()));
+        }
+        Ok(self
+            .positions
+            .iter()
+            .map(|(mmsi, ((lat, lon, sog, cog, name), at))| {
+                let id = mmsi.to_string();
+                let label = if name.is_empty() { &id } else { name };
+                let kind = self
+                    .types
+                    .get(mmsi)
+                    .map(|(t, _)| t.to_string())
+                    .unwrap_or_default();
+                let age = now.duration_since(*at).as_secs_f64().round();
+                row(&id, label, &kind, *lat, *lon, None, *sog, *cog, Some(age))
+            })
+            .collect())
+    }
+}
+
+/// With an AISStream key, hold one connection open for the server's life,
+/// reconnecting with backoff, and keep `Intel::fleet` current.
+pub fn spawn_ais(state: &AppState) {
+    let Some(key) = state.config.aisstream_key.clone() else {
+        return;
+    };
+    let intel = state.intel.clone();
+    tokio::spawn(async move {
+        let mut backoff = AIS_BACKOFF_MIN;
+        loop {
+            let started = Instant::now();
+            let e = ais_session(&key, &intel.fleet).await;
+            tracing::warn!(error = %e, "AISStream disconnected");
+            intel.fleet.lock().expect("fleet").error = Some(e);
+            // A connection that held a while earns a quick reconnect.
+            if started.elapsed() > AIS_BACKOFF_MAX {
+                backoff = AIS_BACKOFF_MIN;
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(AIS_BACKOFF_MAX);
+        }
+    });
+}
+
+/// One connection, until it fails; returns why.
+async fn ais_session(key: &SecretString, fleet: &std::sync::Mutex<Fleet>) -> String {
+    use tokio_tungstenite::tungstenite::Message;
+    let (mut ws, _) = match tokio::time::timeout(
+        Duration::from_secs(8),
+        tokio_tungstenite::connect_async(AIS_URL),
+    )
+    .await
+    {
+        Err(_) => return "timed out".to_owned(),
+        Ok(Err(_)) => return "unreachable".to_owned(),
+        Ok(Ok(ws)) => ws,
+    };
+    let subscribe = json!({
+        "APIKey": key.expose_secret(),
+        "BoundingBoxes": [[[-90, -180], [90, 180]]],
+        "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
+    });
+    if ws.send(Message::text(subscribe.to_string())).await.is_err() {
+        return "subscribe failed".to_owned();
+    }
+    let mut pruned = Instant::now();
+    loop {
+        // The whole world never goes quiet this long; a silent socket is dead.
+        let msg = match tokio::time::timeout(AIS_IDLE, ws.next()).await {
+            Err(_) => return "no messages for a minute".to_owned(),
+            Ok(None) => return "closed".to_owned(),
+            Ok(Some(Err(e))) => return format!("read: {e}"),
+            Ok(Some(Ok(msg))) => msg,
+        };
+        let v: Value = match &msg {
+            Message::Text(t) => serde_json::from_str(t).unwrap_or(Value::Null),
+            Message::Binary(b) => serde_json::from_slice(b).unwrap_or(Value::Null),
+            _ => continue,
+        };
+        let now = Instant::now();
+        let mut fleet = fleet.lock().expect("fleet");
+        if let Err(e) = fleet.apply(&v, now) {
+            return e;
+        }
+        if now.duration_since(pruned) > AIS_PRUNE_EVERY {
+            fleet.prune(now);
+            pruned = now;
+        }
+    }
+}
+
+// ---- military bases -----------------------------------------------------------
+
+/// Air bases, naval and submarine bases, military bases, space force bases
+/// and spaceports, still in use, with a position and an English name.
+const BASES_QUERY: &str = r#"SELECT ?item ?itemLabel (SAMPLE(?coord) AS ?c)
+  (GROUP_CONCAT(DISTINCT ?classLabel; separator=", ") AS ?kinds) (SAMPLE(?countryLabel) AS ?country)
+  (GROUP_CONCAT(DISTINCT ?opLabel; separator=", ") AS ?ops) WHERE {
+  VALUES ?class { wd:Q695850 wd:Q1324633 wd:Q331367 wd:Q245016 wd:Q18691599 wd:Q131520524 wd:Q194188 }
+  ?item wdt:P31 ?class ; wdt:P625 ?coord ; rdfs:label ?itemLabel . FILTER(LANG(?itemLabel) = "en")
+  FILTER NOT EXISTS { ?item wdt:P576|wdt:P3999 [] }
+  ?class rdfs:label ?classLabel . FILTER(LANG(?classLabel) = "en")
+  OPTIONAL { ?item wdt:P17 ?cty . ?cty rdfs:label ?countryLabel . FILTER(LANG(?countryLabel) = "en") }
+  OPTIONAL { ?item wdt:P137|wdt:P241 ?op . ?op rdfs:label ?opLabel . FILTER(LANG(?opLabel) = "en") }
+} GROUP BY ?item ?itemLabel"#;
+
+async fn bases(http: &reqwest::Client) -> std::result::Result<Vec<Value>, String> {
+    let url = reqwest::Url::parse_with_params(
+        "https://query.wikidata.org/sparql",
+        &[("query", BASES_QUERY)],
+    )
+    .map_err(|e| format!("url: {e}"))?;
+    let body = fetch_within(
+        http,
+        url.as_str(),
+        "application/sparql-results+json",
+        Duration::from_secs(45),
+    )
+    .await?;
+    parse_bases(&body)
+}
+
+/// air | navy | army | space, from the site's classes, operators and name.
+pub fn branch(name: &str, kinds: &str, ops: &str) -> &'static str {
+    // "Aerospace Forces" is an air force, not a space one.
+    let t = format!("{name} | {kinds} | {ops}")
+        .to_lowercase()
+        .replace("aerospace", "aero");
+    let has = |words: &[&str]| words.iter().any(|w| t.contains(w));
+    // Commonwealth shore establishments are named like ships.
+    let navy_name = ["INS ", "HMS ", "HMAS ", "HMNZS ", "HMCS ", "HMNB "]
+        .iter()
+        .any(|p| name.starts_with(p));
+    if has(&[
+        "space force",
+        "spaceport",
+        "cosmodrome",
+        "space center",
+        "space centre",
+        "launch site",
+        "space command",
+    ]) {
+        "space"
+    } else if navy_name
+        || has(&[
+            "naval",
+            "navy",
+            "submarine",
+            "marine corps",
+            "marines",
+            "coast guard",
+            "fleet",
+        ])
+    {
+        "navy"
+    } else if has(&[
+        "airbase",
+        "air base",
+        "air force",
+        "air station",
+        "raf ",
+        "air national guard",
+        "aero",
+    ]) {
+        "air"
+    } else {
+        "army"
+    }
+}
+
+/// SPARQL JSON → `[qid, name, "branch|kinds|country|operators", lat, lon, …]`.
+pub fn parse_bases(body: &[u8]) -> std::result::Result<Vec<Value>, String> {
+    let v: Value = serde_json::from_slice(body).map_err(|_| "not JSON".to_owned())?;
+    let s = |b: &Value, k: &str| b[k]["value"].as_str().unwrap_or("").to_owned();
+    Ok(v["results"]["bindings"]
+        .as_array()
         .into_iter()
-        .map(|(mmsi, (lat, lon, sog, cog, name))| {
-            let id = mmsi.to_string();
-            let label = if name.is_empty() { &id } else { &name };
-            let kind = types.get(&mmsi).map(|t| t.to_string()).unwrap_or_default();
-            row(&id, label, &kind, lat, lon, None, sog, cog, None)
+        .flatten()
+        .filter_map(|b| {
+            // WKT "Point(lon lat)".
+            let c = s(b, "c");
+            let mut ll = c.strip_prefix("Point(")?.strip_suffix(')')?.split(' ');
+            let (lon, lat) = (ll.next()?.parse().ok()?, ll.next()?.parse().ok()?);
+            let id = s(b, "item").rsplit('/').next()?.to_owned();
+            let (name, kinds, ops) = (s(b, "itemLabel"), s(b, "kinds"), s(b, "ops"));
+            let detail = format!(
+                "{}|{kinds}|{}|{ops}",
+                branch(&name, &kinds, &ops),
+                s(b, "country")
+            );
+            Some(row(&id, &name, &detail, lat, lon, None, None, None, None))
         })
         .collect())
 }
@@ -412,6 +612,122 @@ mod tests {
         assert_eq!(rows[0][5], 3048.0);
         assert_eq!(rows[0][6], 51.4);
         assert_eq!(rows[1][5], Value::Null);
+    }
+
+    fn position(mmsi: u64, name: &str, lat: f64, sog: f64, cog: f64) -> Value {
+        json!({"MessageType": "PositionReport",
+            "MetaData": {"MMSI": mmsi, "ShipName": name, "latitude": lat, "longitude": -118.25},
+            "Message": {"PositionReport": {"Sog": sog, "Cog": cog}}})
+    }
+
+    #[test]
+    fn fleet_rows_keep_latest_fix_and_type() {
+        let (mut fleet, now) = (Fleet::default(), Instant::now());
+        assert_eq!(
+            fleet.rows(now).unwrap_err(),
+            "no AIS positions received yet"
+        );
+        fleet
+            .apply(&position(1, "EVER GIVEN  ", 33.0, 10.0, 90.0), now)
+            .unwrap();
+        fleet
+            .apply(&position(1, "EVER GIVEN", 33.7, 102.3, 360.0), now)
+            .unwrap();
+        fleet.apply(&position(2, "", 91.0, 1.0, 1.0), now).unwrap();
+        fleet.apply(&position(3, "", 10.0, 0.0, 0.0), now).unwrap();
+        let ship_type = json!({"MessageType": "ShipStaticData", "MetaData": {"MMSI": 1},
+            "Message": {"ShipStaticData": {"Type": 70}}});
+        fleet.apply(&ship_type, now).unwrap();
+        let mut rows = fleet.rows(now + Duration::from_secs(600)).unwrap();
+        rows.sort_by_key(|r| r[0].as_str().unwrap().to_owned());
+        assert_eq!(
+            rows,
+            vec![
+                json!([
+                    "1",
+                    "EVER GIVEN",
+                    "70",
+                    33.7,
+                    -118.25,
+                    null,
+                    null,
+                    null,
+                    600.0
+                ]),
+                json!(["3", "3", "", 10.0, -118.25, null, 0.0, 0.0, 600.0]),
+            ]
+        );
+        assert_eq!(
+            fleet.apply(&json!({"error": "Api Key Is Not Valid"}), now),
+            Err("AISStream: Api Key Is Not Valid".to_owned())
+        );
+    }
+
+    #[test]
+    fn fleet_prunes_stale_ships() {
+        let (mut fleet, t0) = (Fleet::default(), Instant::now());
+        fleet.apply(&position(1, "OLD", 1.0, 5.0, 5.0), t0).unwrap();
+        let t1 = t0 + AIS_STALE - Duration::from_secs(60);
+        fleet.apply(&position(2, "NEW", 2.0, 5.0, 5.0), t1).unwrap();
+        fleet.prune(t0 + AIS_STALE);
+        let rows = fleet.rows(t0 + AIS_STALE).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][1], "NEW");
+        assert_eq!(rows[0][8], 60.0);
+    }
+
+    #[test]
+    fn bases_sort_into_branches() {
+        assert_eq!(
+            branch(
+                "Vandenberg Space Force Base",
+                "airbase, spaceport",
+                "United States Space Force"
+            ),
+            "space"
+        );
+        assert_eq!(
+            branch("Kubinka", "airbase", "Russian Aerospace Forces"),
+            "air"
+        );
+        assert_eq!(
+            branch("Naval Station Norfolk", "naval base, submarine base", ""),
+            "navy"
+        );
+        assert_eq!(
+            branch(
+                "Marine Corps Air Station Miramar",
+                "airbase",
+                "United States Marine Corps"
+            ),
+            "navy"
+        );
+        assert_eq!(
+            branch("Ramstein Air Base", "airbase", "United States Air Force"),
+            "air"
+        );
+        assert_eq!(branch("Fort Bragg", "military base", ""), "army");
+        assert_eq!(branch("INS Angre", "military base", ""), "navy");
+        assert_eq!(branch("Fort Collins Barracks", "military base", ""), "army");
+    }
+
+    #[test]
+    fn bases_parse_wkt_points() {
+        let body = json!({"results": {"bindings": [
+            {"item": {"value": "http://www.wikidata.org/entity/Q509549"}, "itemLabel": {"value": "Fort George G. Meade"},
+             "c": {"value": "Point(-76.7431 39.1069)"}, "kinds": {"value": "military base"},
+             "country": {"value": "United States"}, "ops": {"value": "United States Army"}},
+            {"item": {"value": "http://www.wikidata.org/entity/Q1"}, "itemLabel": {"value": "No point"}, "c": {"value": "junk"}}
+        ]}}).to_string();
+        let rows = parse_bases(body.as_bytes()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], "Q509549");
+        assert_eq!(
+            rows[0][2],
+            "army|military base|United States|United States Army"
+        );
+        assert_eq!(rows[0][3], 39.107);
+        assert_eq!(rows[0][4], -76.743);
     }
 
     #[test]

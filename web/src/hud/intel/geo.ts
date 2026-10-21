@@ -796,6 +796,22 @@ export function locate(text: string): Place | null {
 }
 
 /** A US state by postal code ("CA"), for alerts placed only by state. */
+// State FIPS numbers: Broadcastify's state pages are /listen/stid/<fips>.
+const FIPS: Record<string, number> = Object.fromEntries(
+  "AL1 AK2 AZ4 AR5 CA6 CO8 CT9 DE10 DC11 FL12 GA13 HI15 ID16 IL17 IN18 IA19 KS20 KY21 LA22 ME23 MD24 MA25 MI26 MN27 MS28 MO29 MT30 NE31 NV32 NH33 NJ34 NM35 NY36 NC37 ND38 OH39 OK40 OR41 PA42 RI44 SC45 SD46 TN47 TX48 UT49 VT50 VA51 WA53 WV54 WI55 WY56 GU66 PR72"
+    .split(" ")
+    .map((s) => [s.slice(0, 2), Number(s.slice(2))]),
+);
+
+/** Broadcastify's scanner listings for the US state a place name is in
+ * ("Bend, OR", "California", "Flood Watch · Colorado"), or null. */
+export function scannerUrl(placeName: string): string | null {
+  entries();
+  let code = /,\s*([A-Z]{2})$/.exec(placeName)?.[1] ?? null;
+  if (!code) for (const [c, p] of STATE_BY_CODE) if (placeName === p.name || placeName.endsWith(` · ${p.name}`)) code = c;
+  return code && FIPS[code] ? `https://www.broadcastify.com/listen/stid/${FIPS[code]}` : null;
+}
+
 export function stateByCode(code: string): Place | null {
   entries();
   return STATE_BY_CODE.get(code.toUpperCase()) ?? null;
