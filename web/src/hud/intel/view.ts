@@ -18,6 +18,7 @@ import { scannerUrl } from "./geo";
 import { localZone } from "../location";
 import { Globe, type GlobeNode } from "./globe";
 import * as watch from "./watch";
+import { distanceKm } from "./watch";
 import { LAYERS, layerMarks, thingPrompt, type LayerData, type LayerId, type Thing } from "./layers";
 import { ago, CATEGORIES, cluster, COLOR, toStory, type Category, type Entry, type Feed, type IntelNode, type SearchResult, type Story } from "./model";
 
@@ -53,6 +54,7 @@ const SKELETON = html`
         <button class="btn-ghost" id="intel-us" title="Centre on the United States">U.S.</button>
         <button class="btn-ghost" id="intel-world" title="Show the whole world">World</button>
         <button class="btn-ghost" id="intel-refresh" title="Fetch the feeds again">Refresh</button>
+        <button class="btn-ghost" id="intel-region" title="What is happening in the part of the world on screen">This view</button>
       </div>
       <div class="intel-overlay intel-layers" id="intel-layers" role="group" aria-label="Layers"></div>
       <div class="intel-search-banner" id="intel-search-banner" hidden>
@@ -114,6 +116,84 @@ export function searchPrompt(query: string, entries: Entry[], articles: Story[])
   ].join("\n");
 }
 
+/** What is on the globe within `radiusKm` of a point: the stories (by
+ * category, loudest places first), live-layer marks by kind, the ones worth
+ * naming (conflict events, military aircraft), and the worst air. */
+export interface Region {
+  lat: number;
+  lon: number;
+  radiusKm: number;
+  stories: Story[];
+  categories: [Category, number][];
+  marks: [string, number][];
+  notable: Thing[];
+  worstAqi: number | null;
+}
+
+const NOTABLE: LayerId[] = ["conflict", "military"];
+
+export function region(lat: number, lon: number, radiusKm: number, stories: Story[], things: Iterable<Thing>, now = Date.now()): Region {
+  const here = { lat, lon };
+  const near = (p: { lat: number; lon: number } | null) => !!p && distanceKm(here, p) <= radiusKm;
+  const inView = stories.filter((s) => near(s.where));
+  const cats = new Map<Category, number>();
+  for (const s of inView) cats.set(s.category, (cats.get(s.category) ?? 0) + 1);
+  const kinds = new Map<string, number>();
+  const notable: Thing[] = [];
+  let worstAqi: number | null = null;
+  for (const t of things) {
+    const at = t.pos(now);
+    if (!at || !near({ lat: at[0], lon: at[1] })) continue;
+    if (t.layer === "climate") continue;
+    if (t.layer === "air") {
+      const aqi = Number(t.title.match(/AQI (\d+)/)?.[1]);
+      if (Number.isFinite(aqi)) worstAqi = Math.max(worstAqi ?? 0, aqi);
+      continue;
+    }
+    kinds.set(t.kind, (kinds.get(t.kind) ?? 0) + 1);
+    if (NOTABLE.includes(t.layer)) notable.push(t);
+  }
+  return {
+    lat,
+    lon,
+    radiusKm,
+    stories: inView,
+    categories: [...cats.entries()].sort((a, b) => b[1] - a[1]),
+    marks: [...kinds.entries()].sort((a, b) => b[1] - a[1]),
+    notable,
+    worstAqi,
+  };
+}
+
+/** The brief Jarvis is asked for about the part of the world on screen. */
+export function regionPrompt(r: Region): string {
+  const fmt = (lat: number, lon: number) => `${Math.abs(lat).toFixed(1)}°${lat >= 0 ? "N" : "S"} ${Math.abs(lon).toFixed(1)}°${lon >= 0 ? "E" : "W"}`;
+  const reports = r.stories
+    .slice(0, 20)
+    .map((s, i) => `${i + 1}. [${s.category}] ${s.title} (${s.where?.name ?? "?"}; ${s.source}${s.published ? `, ${s.published}` : ""})`)
+    .join("\n");
+  const notable = r.notable
+    .slice(0, 12)
+    .map((t) => `- ${t.kind}: ${t.title}${t.fields[0] ? ` (${t.fields[0][1]})` : ""}${t.links?.[0] ? ` ${t.links[0][1]}` : ""}`)
+    .join("\n");
+  return [
+    "[intel] Brief me on what is happening in this region right now and what has changed in the last day, for the Intel panel. Your",
+    "reply is shown on screen, not spoken, so ignore the short spoken-reply rules: plain markdown (# headings, - bullets, no tables),",
+    "beginning with one plain sentence that sums it up (read aloud). Name the region first, then: Main developments, Security and",
+    "conflict, Hazards and weather, Anything unusual in the tracked traffic, What to watch next. Check the latest reporting with your",
+    "web search and fetch tools first. The conflict events are machine-coded by GDELT and can be misplaced or mislabelled: confirm",
+    "before you rely on one. Give times in Pacific time and say what you could not confirm.",
+    `Region: within ${Math.round(r.radiusKm).toLocaleString("en-US")} km of ${fmt(r.lat, r.lon)}`,
+    r.categories.length ? `Stories by category: ${r.categories.map(([c, n]) => `${c} ${n}`).join(", ")}` : "No stories from the feeds are placed here.",
+    reports ? `Reports:\n${reports}` : "",
+    r.marks.length ? `Tracked now: ${r.marks.map(([k, n]) => `${n} ${k.toLowerCase()}`).join(", ")}` : "",
+    notable ? `Worth a look:\n${notable}` : "",
+    r.worstAqi !== null ? `Worst US AQI in view: ${r.worstAqi}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 const el = <T extends HTMLElement>(tag: string, cls?: string, text?: string): T => {
   const e = document.createElement(tag) as T;
   if (cls) e.className = cls;
@@ -143,6 +223,8 @@ export class IntelView {
   private readonly things = new Map<string, Thing>();
   private layerTimer = 0;
   private watches: watch.Watch[] = [];
+  /** The dossier is showing "This view": a feed refresh leaves it up. */
+  private regionShown = false;
 
   constructor(
     root: HTMLElement,
@@ -158,6 +240,7 @@ export class IntelView {
     this.$<HTMLButtonElement>("#intel-us").onclick = () => this.globe.home(false);
     this.$<HTMLButtonElement>("#intel-world").onclick = () => this.globe.home(true);
     this.$<HTMLButtonElement>("#intel-refresh").onclick = () => void this.load(true);
+    this.$<HTMLButtonElement>("#intel-region").onclick = () => this.renderRegion();
     this.$<HTMLButtonElement>("#intel-search-clear").onclick = () => this.clearSearch();
     this.$<HTMLFormElement>("#intel-search").onsubmit = (e) => {
       e.preventDefault();
@@ -243,7 +326,7 @@ export class IntelView {
     this.renderChips();
     this.renderList(shown);
     this.renderTicker();
-    if (!this.selectedKey && !this.search) this.renderIdle();
+    if (!this.selectedKey && !this.search && !this.regionShown) this.renderIdle();
   }
 
   private renderChips() {
@@ -464,6 +547,7 @@ export class IntelView {
 
   private selectNode(key: string | null, fly = true) {
     this.selectedKey = key;
+    this.regionShown = false;
     this.globe.select(key, fly);
     const thing = key ? this.things.get(key) : undefined;
     if (key && thing) {
@@ -520,6 +604,31 @@ export class IntelView {
       ul.append(li);
     }
     d.append(ul);
+  }
+
+  private renderRegion() {
+    const v = this.globe.view();
+    const r = region(v.lat, v.lon, v.radiusDeg * 111.2, this.search ? this.search.stories : this.filtered(), this.things.values());
+    this.selectNode(null, false);
+    this.regionShown = true;
+    const d = this.dossier();
+    d.replaceChildren();
+    d.style.removeProperty("--cat");
+    const head = el("header", "intel-dossier-head");
+    head.append(
+      el("span", "intel-kicker", "This view"),
+      el("h3", "intel-dossier-title", `${r.stories.length} stories · ${r.marks.reduce((n, [, c]) => n + c, 0)} tracked`),
+      el("span", "intel-coords", `within ${Math.round(r.radiusKm).toLocaleString("en-US")} km of ${r.lat.toFixed(2)}°, ${r.lon.toFixed(2)}°`),
+    );
+    d.append(head);
+    const dl = el("dl", "intel-facts");
+    for (const [c, n] of r.categories) dl.append(el("dt", "", CATEGORIES.find((x) => x.id === c)?.label ?? c), el("dd", "", String(n)));
+    for (const [k, n] of r.marks) dl.append(el("dt", "", k), el("dd", "", String(n)));
+    if (r.worstAqi !== null) dl.append(el("dt", "", "Worst US AQI"), el("dd", "", String(r.worstAqi)));
+    d.append(dl);
+    if (!r.stories.length && !r.marks.length) d.append(el("p", "intel-hint", "Nothing from the feeds or layers is placed here; Jarvis will search for news anyway."));
+    // Keyed by the view, so a brief is kept for this framing only.
+    d.append(this.briefBlock(`region:${v.lat.toFixed(1)},${v.lon.toFixed(1)},${v.radiusDeg.toFixed(0)}`, "Brief me on this region", () => regionPrompt(r)));
   }
 
   private renderNode(key: string, name: string, lat: number | null, lon: number | null, stories: Story[], category: Category) {
@@ -611,6 +720,7 @@ export class IntelView {
   // ---- search ----------------------------------------------------------------
 
   private async runSearch(q: string) {
+    this.regionShown = false;
     const d = this.dossier();
     d.replaceChildren(el("p", "intel-hint", `Searching for “${q}”…`));
     try {
@@ -632,6 +742,7 @@ export class IntelView {
 
   private clearSearch() {
     this.search = null;
+    this.regionShown = false;
     this.selectedKey = null;
     this.$("#intel-search-banner").hidden = true;
     this.$<HTMLInputElement>("#intel-q").value = "";

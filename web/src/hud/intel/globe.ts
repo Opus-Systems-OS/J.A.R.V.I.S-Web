@@ -195,6 +195,14 @@ export class Globe {
     this.flight = { from, to: [-lon, -lat], z0: this.zoom, z1: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom)), t0: performance.now(), ms: 1100 };
   }
 
+  /** The centre of the view and how far from it (degrees of arc) the
+   * frame's shorter side reaches: the whole visible hemisphere at most. */
+  view(): { lat: number; lon: number; radiusDeg: number } {
+    const lon = ((((-this.rotation[0] + 180) % 360) + 360) % 360) - 180;
+    const half = Math.min(this.width, this.height) / 2;
+    return { lat: -this.rotation[1], lon, radiusDeg: Math.asin(Math.min(1, half / this.projection.scale())) / RAD };
+  }
+
   home(world = false) {
     this.selected = null;
     if (world) this.flyTo(25, -40, 0.95);
