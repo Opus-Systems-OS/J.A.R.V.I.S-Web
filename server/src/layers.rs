@@ -45,10 +45,7 @@ const AIS_MAX_SHIPS: usize = 5000;
 
 pub type Slots = [tokio::sync::Mutex<Option<(Instant, Bytes)>>; LAYERS.len()];
 
-pub async fn layer(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Result<Response> {
+pub async fn layer(State(state): State<AppState>, Path(name): Path<String>) -> Result<Response> {
     let i = LAYERS
         .iter()
         .position(|(n, _)| *n == name)
