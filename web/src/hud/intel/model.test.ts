@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { locate, stateByCode } from "./geo";
+import { locate, scannerUrl, stateByCode } from "./geo";
 import { classify, cluster, toStory, type RawItem } from "./model";
 
 const news = (title: string, summary = ""): RawItem => ({ id: title, kind: "news", title, summary, source: "x", url: "", feed: "x" });
@@ -32,6 +32,15 @@ describe("locate", () => {
     expect(locate("Subway delays in New York")?.name).toBe("New York City, NY");
     expect(locate("Washington weighs new sanctions")?.name).toBe("Washington, D.C.");
     expect(locate("Rain soaks Washington state")?.name).toBe("Washington State");
+  });
+
+  it("links a US place to its state's scanner listings", () => {
+    expect(scannerUrl("Bend, OR")).toBe("https://www.broadcastify.com/listen/stid/41");
+    expect(scannerUrl("California")).toBe("https://www.broadcastify.com/listen/stid/6");
+    expect(scannerUrl("Flood Watch · Colorado")).toBe("https://www.broadcastify.com/listen/stid/8");
+    expect(scannerUrl("Washington, D.C.")).toBe("https://www.broadcastify.com/listen/stid/11");
+    expect(scannerUrl("Kyiv, Ukraine")).toBeNull();
+    expect(scannerUrl("Paris, France")).toBeNull();
   });
 
   it("finds states by postal code", () => {
