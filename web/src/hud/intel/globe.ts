@@ -23,7 +23,7 @@ export interface GlobeNode {
   label: string;
   count: number;
   /** Layer marks only: how to draw it, and where it is now (live motion). */
-  shape?: "plane" | "ship" | "sat" | "cell" | "base";
+  shape?: "plane" | "ship" | "sat" | "cell" | "base" | "dot";
   /** Heading, degrees clockwise from north (planes). */
   track?: number | null;
   pos?: (now: number) => [number, number] | null;

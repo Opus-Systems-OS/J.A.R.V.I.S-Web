@@ -1,12 +1,13 @@
 // The globe's live layers (`/web/intel/layer/{id}`): what each row means,
 // how it is drawn, where it is now (aircraft and ships dead-reckoned from
 // their last report, satellites propagated from their orbits), and what
-// the dossier and Jarvis are told when one is clicked.
+// the dossier and Jarvis are told when one is clicked. Air quality and
+// conflict events stay where they were reported.
 
 import { degreesLat, degreesLong, eciToGeodetic, gstime, propagate, twoline2satrec } from "satellite.js";
 import type { GlobeNode } from "./globe";
 
-export type LayerId = "flights" | "military" | "ships" | "satellites" | "climate" | "bases" | "atc";
+export type LayerId = "flights" | "military" | "ships" | "satellites" | "climate" | "bases" | "atc" | "air" | "conflict";
 
 export const LAYERS: { id: LayerId; label: string; color: string; refreshMs: number }[] = [
   { id: "flights", label: "Flights", color: "#9fd3ff", refreshMs: 15 * 60_000 },
@@ -17,6 +18,8 @@ export const LAYERS: { id: LayerId; label: string; color: string; refreshMs: num
   { id: "bases", label: "Bases", color: "#c084fc", refreshMs: 24 * 3600_000 },
   // Bundled (airports.json), never fetched.
   { id: "atc", label: "ATC", color: "#ffd9a8", refreshMs: 24 * 3600_000 },
+  { id: "air", label: "Air quality", color: "#7ee081", refreshMs: 30 * 60_000 },
+  { id: "conflict", label: "Conflict events", color: "#ff2d55", refreshMs: 15 * 60_000 },
 ];
 
 /** Base markers by service (the row's detail starts with one of these). */
@@ -33,8 +36,8 @@ export interface LayerData {
   error?: string;
 }
 
-/** `[id, label, detail, lat, lon, alt_m, speed_ms, track_deg, value]`. */
-type Row = [string, string, string, number, number, number | null, number | null, number | null, number | null];
+/** `[id, label, detail, lat, lon, alt_m, speed_ms, track_deg, value]`; conflict rows add the article link. */
+type Row = [string, string, string, number, number, number | null, number | null, number | null, number | null, string?];
 /** `[norad id, name, group, line1, line2]`. */
 type Sat = [string, string, string, string, string];
 
@@ -80,6 +83,24 @@ export function deadReckon(lat: number, lon: number, track: number, speed: numbe
   return [(p2 * 180) / Math.PI, ((((l2 * 180) / Math.PI + 540) % 360) - 180)];
 }
 
+/** The EPA's US AQI bands: good, moderate, sensitive groups, unhealthy, very unhealthy, hazardous. */
+const AQI: [number, string, string][] = [
+  [50, "Good", "#00e400"],
+  [100, "Moderate", "#ffff00"],
+  [150, "Unhealthy for sensitive groups", "#ff7e00"],
+  [200, "Unhealthy", "#ff0000"],
+  [300, "Very unhealthy", "#8f3f97"],
+  [Infinity, "Hazardous", "#7e0023"],
+];
+export const aqiBand = (aqi: number) => AQI.find(([max]) => aqi <= max) ?? AQI[AQI.length - 1];
+
+/** CAMEO root codes GDELT tags violent events with. */
+const CONFLICT: Record<number, [string, string]> = {
+  18: ["Assault", "#ff9f1c"],
+  19: ["Fighting", "#ff2d55"],
+  20: ["Mass violence", "#e040fb"],
+};
+
 /** Blue (−30 °C) through cyan and yellow to red (40 °C). */
 export function tempColor(c: number): string {
   const hue = 240 - (Math.max(-30, Math.min(40, c)) + 30) * (240 / 70);
@@ -108,9 +129,9 @@ export function layerMarks(id: LayerId, data: LayerData): { marks: GlobeNode[]; 
       weight: 0,
       label: thing.label,
       count: 1,
-      shape: id === "flights" || id === "military" ? "plane" : id === "ships" ? "ship" : id === "satellites" || id === "atc" ? "sat" : id === "bases" ? "base" : "cell",
+      shape: id === "flights" || id === "military" ? "plane" : id === "ships" ? "ship" : id === "satellites" || id === "atc" ? "sat" : id === "bases" ? "base" : id === "climate" ? "cell" : "dot",
       track: id === "flights" || id === "military" ? r[7] : null,
-      pos: id === "climate" || id === "bases" || id === "atc" ? undefined : thing.pos,
+      pos: id === "climate" || id === "bases" || id === "atc" || id === "air" || id === "conflict" ? undefined : thing.pos,
     });
     things.set(key, thing);
   }
@@ -157,6 +178,41 @@ function fromRow(id: LayerId, r: Row, t0: number): (Thing & { color: string; lab
       pos,
       color: tempColor(value ?? 0),
       label: `${label} · wind ${fmt(speed, "m/s")}`,
+    };
+  }
+  if (id === "air") {
+    const [, band, color] = aqiBand(value ?? 0);
+    return {
+      layer: id,
+      kind: "Air quality",
+      title: `US AQI ${value?.toFixed(0)} · ${band}`,
+      fields: [
+        ["US AQI", `${value?.toFixed(0) ?? "—"} (${band})`],
+        ["PM2.5", detail ? `${detail} µg/m³` : "—"],
+        ["Cell", `${lat.toFixed(1)}°, ${lon.toFixed(1)}°`],
+        ["Source", "Open-Meteo (CAMS model), 10° grid worldwide, 2° over the US"],
+      ],
+      pos,
+      color,
+      label: `${label} · ${band}`,
+    };
+  }
+  if (id === "conflict") {
+    const [kind, color] = CONFLICT[value ?? 0] ?? ["Violent event", "#ff2d55"];
+    return {
+      layer: id,
+      kind,
+      title: label,
+      fields: [
+        ["Where", detail || "—"],
+        ["Event type", `${kind} (CAMEO ${value ?? "?"})`],
+        ["Reported", "in the last two hours"],
+        ["Source", "GDELT, machine-coded from news: the place and type can be wrong, so check the article"],
+      ],
+      links: r[9] ? [["Read the report", r[9]]] : undefined,
+      pos,
+      color,
+      label: `${kind} · ${detail}`,
     };
   }
   if (id === "ships") {
@@ -272,7 +328,11 @@ export function thingPrompt(t: Thing, now = Date.now()): string {
       ? "Brief me on this military installation: who operates it, the units, aircraft, ships or submarines based there, its role, and recent public news about it."
       : t.layer === "climate"
       ? "Brief me on current weather and climate conditions here: how this compares with normal for the season, any extremes, warnings or longer-term trends."
-      : "Identify it (operator, type, purpose, and route or destination where public), say where it is heading and whether anything about it is unusual, and give any recent news involving it.";
+      : t.layer === "air"
+        ? "Brief me on the air quality here: what is driving it (smoke, dust, traffic, industry, weather), any health advisories, and how long it is expected to last."
+        : t.layer === "conflict"
+          ? `Find out what actually happened in this reported violent event: who was involved, casualties, and whether it is part of a wider conflict or a one-off. It was machine-coded by GDELT from the article${t.links?.[0] ? ` ${t.links[0][1]}` : ""}, so first check that the place and type are right.`
+          : "Identify it (operator, type, purpose, and route or destination where public), say where it is heading and whether anything about it is unusual, and give any recent news involving it.";
   return [
     `[intel] ${ask} This is a ${t.kind.toLowerCase()} tracked on the Intel globe: "${t.title}".`,
     "Your reply is shown on screen, not spoken, so ignore the short spoken-reply rules: plain markdown (# headings, - bullets, no tables),",

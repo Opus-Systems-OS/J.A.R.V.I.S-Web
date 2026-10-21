@@ -63,7 +63,9 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   The globe's live layers come the same way (`/web/intel/layer/{name}`,
   each cached for as long as its source allows): CelesTrak satellites
   (stations, brightest, military), OpenSky flights (cargo airlines picked
-  out), adsb.lol military aircraft, Open-Meteo temperature, Wikidata's
+  out), adsb.lol military aircraft, Open-Meteo temperature and air quality,
+  GDELT's machine-coded violent events (last two hours, city-level, linked
+  to the report; noisy, so Jarvis checks before he briefs), Wikidata's
   military bases and spaceports (by service: air, navy, army, space), large
   airports (OurAirports, bundled) with a link out to LiveATC, and AISStream
   ships. Ships need a free AISStream key in `AISSTREAM_API_KEY_FILE`; without
