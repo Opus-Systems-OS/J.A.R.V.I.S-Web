@@ -170,7 +170,7 @@ function rules(id: string, deep: boolean): string[] {
     deep
       ? "- Depth: you may install a heavier engine when the question needs it (Ghidra with a JDK 21 for native pseudocode via `--provider ghidra`, JADX for APK classes, binutils for objdump). Say what you installed."
       : "- Depth: do not install Ghidra, JADX, a JDK or other heavy engines. If the question needs pseudocode or decompiled classes, say so under Unknowns and limits.",
-    "- Explain how it works so Mr. Walker can understand it or build his own version. Do not help bypass licensing, DRM, anti-cheat or",
+    "- Explain how it works so the user can understand it or build their own version. Do not help bypass licensing, DRM, anti-cheat or",
     "  copy protection, and if you find embedded secrets (API keys, tokens, passwords), say that they exist and where, never their values.",
     "- If REA cannot install or a command fails, report the error and what you could still establish instead of guessing.",
   ];

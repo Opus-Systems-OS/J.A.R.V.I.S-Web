@@ -11,15 +11,13 @@
 //! Every URL is a constant (a search only fills in the query string of a
 //! fixed host), every link handed to the page is http(s), and feed text is
 //! stripped of markup here; the page still renders it with `textContent`.
-//! The owner's alone, like Systems.
+//! Every unlocked profile's.
 
-use crate::config::Profile;
 use crate::error::{Error, Result};
 use crate::AppState;
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
-use axum::Extension;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -162,11 +160,7 @@ pub(crate) fn now_rfc3339() -> String {
         .unwrap_or_default()
 }
 
-pub async fn feed(
-    State(state): State<AppState>,
-    Extension(profile): Extension<Profile>,
-) -> Result<Response> {
-    crate::auth::require_full(&profile)?;
+pub async fn feed(State(state): State<AppState>) -> Result<Response> {
     // Held across the fetch: one refresh at a time, everyone else waits for it.
     let mut cached = state.intel.feed.lock().await;
     if let Some((at, body)) = cached.as_ref() {
@@ -238,10 +232,8 @@ pub fn clean_query(q: &str) -> Option<String> {
 
 pub async fn search(
     State(state): State<AppState>,
-    Extension(profile): Extension<Profile>,
     Query(params): Query<SearchParams>,
 ) -> Result<Response> {
-    crate::auth::require_full(&profile)?;
     let q = clean_query(&params.q)
         .ok_or_else(|| Error::InvalidRequest(format!("q must be 1–{MAX_QUERY} characters")))?;
     let key = q.to_lowercase();

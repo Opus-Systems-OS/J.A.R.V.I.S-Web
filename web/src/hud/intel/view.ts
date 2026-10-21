@@ -91,7 +91,7 @@ export function searchPrompt(query: string, entries: Entry[], articles: Story[])
   const matches = entries.slice(0, 8).map((e, i) => `${i + 1}. ${e.title}${e.description ? ` (${e.description})` : ""} ${e.url}`).join("\n");
   const coverage = articles.slice(0, 10).map((s, i) => `${i + 1}. ${s.title} (${s.source}${s.published ? `, ${s.published}` : ""})`).join("\n");
   return [
-    `[intel] Brief Mr. Walker on the search "${query}" for the Intel panel. Your reply is shown on screen, not spoken, so ignore the short`,
+    `[intel] Brief the user on the search "${query}" for the Intel panel. Your reply is shown on screen, not spoken, so ignore the short`,
     "spoken-reply rules: plain markdown (# headings, - bullets, no tables), beginning with one plain sentence that sums it up (read aloud).",
     "If it names a person and several notable people share that name, give each a short section: who they are, why they are notable, and their",
     "recent news coverage. For an event, place or organization, cover what it is, what is happening now and why it matters.",

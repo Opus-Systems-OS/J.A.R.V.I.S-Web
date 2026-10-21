@@ -1296,9 +1296,8 @@ async fn locking_every_device_ends_every_session_of_that_profile_only() {
 }
 
 #[tokio::test]
-async fn intel_is_the_owners_and_needs_an_unlock() {
+async fn intel_is_every_profiles_and_needs_an_unlock() {
     let h = harness().await;
-    let powers = unlock_as(&h, "powers", POWERS_PASSWORD).await;
     for path in [
         "/web/intel/feed",
         "/web/intel/search?q=fire",
@@ -1309,29 +1308,25 @@ async fn intel_is_the_owners_and_needs_an_unlock() {
             StatusCode::UNAUTHORIZED,
             "{path}"
         );
-        assert_eq!(
-            send(&h, bff(Method::GET, path, Some(&powers), None))
-                .await
-                .status,
-            StatusCode::FORBIDDEN,
-            "{path}"
-        );
     }
-    // A bad query is refused before anything leaves this box.
+    // Both profiles get past the gate, and a bad query or unknown layer is
+    // refused before anything leaves this box.
     let walker = unlock(&h).await;
-    let r = send(
-        &h,
-        bff(Method::GET, "/web/intel/search?q=%20", Some(&walker), None),
-    )
-    .await;
-    assert_eq!(r.status, StatusCode::BAD_REQUEST);
-    // An unknown layer is a 404 before anything leaves this box.
-    let r = send(
-        &h,
-        bff(Method::GET, "/web/intel/layer/nope", Some(&walker), None),
-    )
-    .await;
-    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let powers = unlock_as(&h, "powers", POWERS_PASSWORD).await;
+    for who in [&walker, &powers] {
+        let r = send(
+            &h,
+            bff(Method::GET, "/web/intel/search?q=%20", Some(who), None),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        let r = send(
+            &h,
+            bff(Method::GET, "/web/intel/layer/nope", Some(who), None),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND);
+    }
 }
 
 #[tokio::test]
