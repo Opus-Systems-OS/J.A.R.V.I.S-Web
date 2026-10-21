@@ -69,7 +69,9 @@ async fn run() -> error::Result<()> {
     let db = db::Db::open(&cfg.database_path)?;
     let port = cfg.port;
     tracing::info!(config = ?cfg, "starting");
-    let app = jarvis_web::app(AppState::new(cfg, db)?);
+    let state = AppState::new(cfg, db)?;
+    jarvis_web::layers::spawn_ais(&state);
+    let app = jarvis_web::app(state);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await

@@ -23,7 +23,7 @@ export interface GlobeNode {
   label: string;
   count: number;
   /** Layer marks only: how to draw it, and where it is now (live motion). */
-  shape?: "plane" | "ship" | "sat" | "cell";
+  shape?: "plane" | "ship" | "sat" | "cell" | "base";
   /** Heading, degrees clockwise from north (planes). */
   track?: number | null;
   pos?: (now: number) => [number, number] | null;
@@ -482,6 +482,13 @@ export class Globe {
           ctx.lineTo(m.x - ca * 3 - sa * 2.6, m.y - sa * 3 + ca * 2.6);
           ctx.lineTo(m.x - ca * 1.6, m.y - sa * 1.6);
           ctx.lineTo(m.x - ca * 3 + sa * 2.6, m.y - sa * 3 - ca * 2.6);
+          ctx.closePath();
+        } else if (m.shape === "base") {
+          const d = 3.2 * size;
+          ctx.moveTo(m.x, m.y - d);
+          ctx.lineTo(m.x + d, m.y);
+          ctx.lineTo(m.x, m.y + d);
+          ctx.lineTo(m.x - d, m.y);
           ctx.closePath();
         } else if (m.shape === "cell") {
           ctx.moveTo(m.x + cellR, m.y);
