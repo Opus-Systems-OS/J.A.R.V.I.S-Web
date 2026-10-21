@@ -100,3 +100,26 @@ describe("air and conflict layers", () => {
     expect(thingPrompt(t)).toContain(url);
   });
 });
+
+describe("cameras layer", () => {
+  const at = { generated_at: "2026-10-21T05:00:00Z" };
+  it("reads live and still from the row and stays put", () => {
+    const { marks, things } = layerMarks("cams", {
+      ...at,
+      items: [
+        ["ca:7-1", "I-110 : Avenue 26", "I-110, Cypress Park · Caltrans", 34.08, -118.22, null, null, null, 3],
+        ["md:abc", "MD 295 at MD 197", "MD 295 · Maryland CHART", 39.05, -76.83, null, null, null, 1],
+        ["nyc:x", "8 Ave @ 34 St", "Manhattan · NYC DOT", 40.75, -73.99, null, null, null, 2],
+      ],
+    });
+    expect(marks.map((m) => m.shape)).toEqual(["dot", "dot", "dot"]);
+    expect(marks.every((m) => m.pos === undefined)).toBe(true);
+    expect(things.get("cams:ca:7-1")?.camera).toEqual({ id: "ca:7-1", live: true, still: true });
+    expect(things.get("cams:md:abc")?.camera).toEqual({ id: "md:abc", live: true, still: false });
+    const nyc = things.get("cams:nyc:x")!;
+    expect(nyc.camera).toEqual({ id: "nyc:x", live: false, still: true });
+    expect(nyc.kind).toBe("Traffic camera");
+    expect(nyc.fields[1]).toEqual(["Agency", "NYC DOT"]);
+    expect(thingPrompt(nyc)).toContain("traffic here right now");
+  });
+});

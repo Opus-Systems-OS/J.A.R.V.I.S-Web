@@ -1419,3 +1419,24 @@ async fn watches_need_an_unlock_and_are_each_profiles_own() {
     .await;
     assert_eq!(r.status, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn camera_relay_needs_an_unlock_and_a_known_camera() {
+    let h = harness().await;
+    for path in [
+        "/web/intel/cam/ca:7-1/still",
+        "/web/intel/cam/ca:7-1/hls/playlist.m3u8",
+    ] {
+        let r = send(&h, bff(Method::GET, path, None, None)).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{path}");
+    }
+    // A file outside the stream's directory is refused before any lookup.
+    let walker = unlock(&h).await;
+    for path in [
+        "/web/intel/cam/ca:7-1/hls/x.mp4",
+        "/web/intel/cam/ca:7-1/hls/..%2Fplaylist.m3u8",
+    ] {
+        let r = send(&h, bff(Method::GET, path, Some(&walker), None)).await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{path}");
+    }
+}

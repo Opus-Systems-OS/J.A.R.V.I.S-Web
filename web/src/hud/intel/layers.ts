@@ -1,13 +1,13 @@
 // The globe's live layers (`/web/intel/layer/{id}`): what each row means,
 // how it is drawn, where it is now (aircraft and ships dead-reckoned from
 // their last report, satellites propagated from their orbits), and what
-// the dossier and Jarvis are told when one is clicked. Air quality and
-// conflict events stay where they were reported.
+// the dossier and Jarvis are told when one is clicked. Air quality,
+// conflict events and traffic cameras stay where they were reported.
 
 import { degreesLat, degreesLong, eciToGeodetic, gstime, propagate, twoline2satrec } from "satellite.js";
 import type { GlobeNode } from "./globe";
 
-export type LayerId = "flights" | "military" | "ships" | "satellites" | "climate" | "bases" | "atc" | "air" | "conflict";
+export type LayerId = "flights" | "military" | "ships" | "satellites" | "climate" | "bases" | "atc" | "air" | "conflict" | "cams";
 
 export const LAYERS: { id: LayerId; label: string; color: string; refreshMs: number }[] = [
   { id: "flights", label: "Flights", color: "#9fd3ff", refreshMs: 15 * 60_000 },
@@ -20,6 +20,7 @@ export const LAYERS: { id: LayerId; label: string; color: string; refreshMs: num
   { id: "atc", label: "ATC", color: "#ffd9a8", refreshMs: 24 * 3600_000 },
   { id: "air", label: "Air quality", color: "#7ee081", refreshMs: 30 * 60_000 },
   { id: "conflict", label: "Conflict events", color: "#ff2d55", refreshMs: 15 * 60_000 },
+  { id: "cams", label: "Cameras", color: "#9be7ff", refreshMs: 3600_000 },
 ];
 
 /** Base markers by service (the row's detail starts with one of these). */
@@ -49,6 +50,8 @@ export interface Thing {
   fields: [string, string][];
   /** [text, url]: opened in a new tab (nothing is fetched or embedded). */
   links?: [string, string][];
+  /** A traffic camera, played in the dossier through `/web/intel/cam/{id}`. */
+  camera?: { id: string; live: boolean; still: boolean };
   pos(now: number): [number, number] | null;
 }
 
@@ -131,7 +134,7 @@ export function layerMarks(id: LayerId, data: LayerData): { marks: GlobeNode[]; 
       count: 1,
       shape: id === "flights" || id === "military" ? "plane" : id === "ships" ? "ship" : id === "satellites" || id === "atc" ? "sat" : id === "bases" ? "base" : id === "climate" ? "cell" : "dot",
       track: id === "flights" || id === "military" ? r[7] : null,
-      pos: id === "climate" || id === "bases" || id === "atc" || id === "air" || id === "conflict" ? undefined : thing.pos,
+      pos: id === "climate" || id === "bases" || id === "atc" || id === "air" || id === "conflict" || id === "cams" ? undefined : thing.pos,
     });
     things.set(key, thing);
   }
@@ -178,6 +181,26 @@ function fromRow(id: LayerId, r: Row, t0: number): (Thing & { color: string; lab
       pos,
       color: tempColor(value ?? 0),
       label: `${label} · wind ${fmt(speed, "m/s")}`,
+    };
+  }
+  if (id === "cams") {
+    // value: bit 1 live video, bit 2 a still image (`cams.rs`).
+    const live = ((value ?? 0) & 1) === 1;
+    const still = ((value ?? 0) & 2) === 2;
+    const [road, agency] = detail.split(" · ");
+    return {
+      layer: id,
+      kind: live ? "Live traffic camera" : "Traffic camera",
+      title: label || rid,
+      fields: [
+        ["Road", road || "—"],
+        ["Agency", agency || "—"],
+        ["Video", live ? "live stream" : "still image, refreshed every 5 s"],
+      ],
+      camera: { id: rid, live, still },
+      pos,
+      color: live ? "#9be7ff" : "#6f8fa0",
+      label: `${label} · ${live ? "live" : "still"}`,
     };
   }
   if (id === "air") {
@@ -328,7 +351,9 @@ export function thingPrompt(t: Thing, now = Date.now()): string {
       ? "Brief me on this military installation: who operates it, the units, aircraft, ships or submarines based there, its role, and recent public news about it."
       : t.layer === "climate"
       ? "Brief me on current weather and climate conditions here: how this compares with normal for the season, any extremes, warnings or longer-term trends."
-      : t.layer === "air"
+      : t.layer === "cams"
+        ? "Brief me on traffic here right now: incidents, collisions, closures, construction and conditions near this camera, from 511, CHP or state police, and local news."
+        : t.layer === "air"
         ? "Brief me on the air quality here: what is driving it (smoke, dust, traffic, industry, weather), any health advisories, and how long it is expected to last."
         : t.layer === "conflict"
           ? `Find out what actually happened in this reported violent event: who was involved, casualties, and whether it is part of a wider conflict or a one-off. It was machine-coded by GDELT from the article${t.links?.[0] ? ` ${t.links[0][1]}` : ""}, so first check that the place and type are right.`

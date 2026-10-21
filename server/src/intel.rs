@@ -30,13 +30,13 @@ use time::OffsetDateTime;
 
 const FEED_TTL: Duration = Duration::from_secs(5 * 60);
 const SEARCH_TTL: Duration = Duration::from_secs(10 * 60);
-const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
+pub(crate) const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_BODY: usize = 6 * 1024 * 1024;
 const MAX_SUMMARY: usize = 420;
 const PER_FEED: usize = 40;
 const MAX_QUERY: usize = 80;
 const MAX_SEARCHES_CACHED: usize = 64;
-const USER_AGENT: &str = "jarvis-web/0.1 (+https://jarvis.opustower.dev)";
+pub(crate) const USER_AGENT: &str = "jarvis-web/0.1 (+https://jarvis.opustower.dev)";
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Format {
@@ -142,6 +142,7 @@ pub struct Intel {
     searches: Mutex<HashMap<String, (Instant, Bytes)>>,
     pub(crate) layers: crate::layers::Slots,
     pub(crate) fleet: Mutex<crate::layers::Fleet>,
+    pub(crate) cams: Mutex<crate::cams::Index>,
 }
 
 pub(crate) fn json(body: Bytes) -> Response {
