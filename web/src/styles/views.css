@@ -167,6 +167,106 @@
   min-height: 0;
 }
 
+/* ---- Projects ----------------------------------------------------------------- */
+
+.projects {
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(0, 2.2fr);
+  gap: 1.25rem;
+  min-height: 0;
+}
+
+.projects .panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.projects-filter {
+  margin: 0.6rem 0.75rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--line);
+  background: rgba(14, 6, 2, 0.6);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.projects-filter:focus {
+  outline: none;
+  border-color: var(--line-strong);
+  box-shadow: var(--glow-soft);
+}
+
+.projects-groups,
+.projects-detail .panel-body {
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+.projects-group {
+  padding: 0 0.75rem 0.75rem;
+}
+
+.projects .row {
+  cursor: pointer;
+}
+
+.projects .row[aria-selected="true"] {
+  border-left: 2px solid var(--accent);
+  background: rgba(255, 122, 26, 0.08);
+}
+
+.projects-stage {
+  height: min(52vh, 460px);
+  margin: 0.5rem 0;
+  border: 1px solid var(--line);
+  background: radial-gradient(circle at 50% 40%, rgba(255, 122, 26, 0.12), rgba(14, 6, 2, 0.9) 70%);
+}
+
+.projects-stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+
+.projects-models {
+  list-style: none;
+  margin: 0 0 0.85rem;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.projects-models button[aria-pressed="true"] {
+  border-color: var(--accent);
+}
+
+.projects-new {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-width: 460px;
+}
+
+.projects-new .projects-filter {
+  margin: 0;
+}
+
+.projects-choice {
+  font-size: 0.88rem;
+}
+
+.projects-github {
+  display: flex;
+  gap: 1rem;
+  padding-left: 1.3rem;
+}
+
 /* ---- Systems ------------------------------------------------------------------ */
 
 .systems {
@@ -424,6 +524,7 @@
     padding: 16px;
   }
   .fleet,
+  .projects,
   .systems {
     grid-template-columns: minmax(0, 1fr);
   }
