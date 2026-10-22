@@ -181,12 +181,9 @@ pub struct Security {
     pub hits: Vec<TrapHit>,
 }
 
-/// `GET /web/security` (the owner's profile): bans, and the latest hits.
-pub async fn get(
-    State(state): State<AppState>,
-    Extension(p): Extension<Profile>,
-) -> Result<Json<Security>> {
-    auth::require_full(&p)?;
+/// `GET /web/security` (any profile, for Systems → Defenses): bans, and
+/// the latest hits. Lifting a ban stays the owner's.
+pub async fn get(State(state): State<AppState>) -> Result<Json<Security>> {
     Ok(Json(Security {
         bans: state.db.bans()?,
         hits: state.db.trap_hits(50)?,

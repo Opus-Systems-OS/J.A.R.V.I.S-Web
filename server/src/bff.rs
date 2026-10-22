@@ -36,7 +36,9 @@ const ALLOWED_AREAS: &[&str] = &[
     "files",
 ];
 /// A profile that isn't the owner's reaches only these.
-const LIMITED_AREAS: &[&str] = &["me", "sessions", "files", "fleet", "usage", "voice"];
+const LIMITED_AREAS: &[&str] = &[
+    "me", "sessions", "files", "fleet", "usage", "voice", "ops", "rig", "clients",
+];
 /// …and never these (the Fish balance is the owner's ledger).
 const LIMITED_DENIED: &[&str] = &["/v1/voice/credit"];
 /// Never reachable, at any depth.
@@ -222,17 +224,14 @@ mod tests {
             "/v1/usage",
             "/v1/voice/speak",
             "/v1/voice/transcribe",
+            "/v1/ops",
+            "/v1/ops/docker",
+            "/v1/rig",
+            "/v1/clients",
         ] {
             assert!(super::profile_allows(&limited, path), "{path}");
         }
-        for path in [
-            "/v1/ops",
-            "/v1/sources",
-            "/v1/briefing",
-            "/v1/clients",
-            "/v1/rig",
-            "/v1/voice/credit",
-        ] {
+        for path in ["/v1/sources", "/v1/briefing", "/v1/voice/credit"] {
             assert!(!super::profile_allows(&limited, path), "{path}");
             assert!(super::profile_allows(&owner, path), "{path}");
         }

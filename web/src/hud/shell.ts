@@ -78,14 +78,14 @@ const template = (full: boolean) => html`
       <p class="orb-sub" id="orb-sub"></p>
     </div>
     <aside class="column column-right">
-      ${full ? PANEL("panel-systems", "Systems", html`<ul class="rows" id="systems-rows"><li class="panel-empty">Reading the tower…</li></ul>`) : ""}
+      ${PANEL("panel-systems", "Systems", html`<ul class="rows" id="systems-rows"><li class="panel-empty">Reading the tower…</li></ul>`)}
       ${PANEL("panel-usage", "Usage", html`<ul class="rows" id="usage-rows"><li class="panel-empty">Reading the ledger…</li></ul>`)}
     </aside>
   </div>
   <div class="view" data-view="Fleet" id="view-fleet" hidden></div>
   <div class="view view-intel" data-view="Intel" id="view-intel" hidden></div>
   <div class="view view-reverse" data-view="Reverse" id="view-reverse" hidden></div>
-  ${full ? html`<div class="view" data-view="Systems" id="view-systems" hidden></div>` : ""}
+  <div class="view" data-view="Systems" id="view-systems" hidden></div>
   <div class="view" data-view="Usage" id="view-usage" hidden></div>
   <div class="view" data-view="Terminal" id="view-terminal" hidden></div>
   </div>
@@ -179,7 +179,8 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
 
   // ---- views ---------------------------------------------------------------
   const fleetView = full ? new FleetView($("#view-fleet")) : new FleetView($("#view-fleet"), []);
-  const systemsView = full ? new SystemsView($("#view-systems")) : null;
+  // Everyone sees Systems; only the owner lifts a ban.
+  const systemsView = new SystemsView($("#view-systems"), full);
   const usageView = new UsageView($("#view-usage"), (c) => watch.observe(c), full);
   /** What a tab's written reply (an Intel brief, a Reverse report) may say aloud: its first line. */
   const speakLead = (line: string) => {
@@ -234,7 +235,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     root.querySelectorAll<HTMLElement>("[data-view]").forEach((v) => (v.hidden = v.dataset.view !== tab));
     root.dataset.tab = tab;
     if (current === "Fleet") fleetView.hide();
-    if (current === "Systems") systemsView?.hide();
+    if (current === "Systems") systemsView.hide();
     if (current === "Usage") usageView.hide();
     if (current === "Intel") intelView?.hide();
     if (current === "Reverse") reverseView.hide();
@@ -242,7 +243,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     if (tab === "Intel") showIntel();
     if (tab === "Reverse") reverseView.show();
     if (tab === "Fleet") fleetView.show();
-    if (tab === "Systems") systemsView?.show();
+    if (tab === "Systems") systemsView.show();
     if (tab === "Usage") usageView.show();
     if (tab === "Terminal") terminal.focus();
   };
@@ -475,7 +476,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     onLocked();
   };
 
-  // ---- systems panel (the owner's) ------------------------------------------
+  // ---- systems panel ----------------------------------------------------------
   const renderSystems = async () => {
     const rows = root.querySelector<HTMLUListElement>("#systems-rows");
     if (!rows) return;
@@ -502,10 +503,8 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       setHtml(rows, html`<li class="panel-empty">Operations feed unavailable</li>`);
     }
   };
-  if (full) {
-    void renderSystems();
-    timers.push(window.setInterval(() => void renderSystems(), 60_000));
-  }
+  void renderSystems();
+  timers.push(window.setInterval(() => void renderSystems(), 60_000));
 
   // ---- credits: banner, Usage panel, spoken warnings ---------------------------
   const banner = $<HTMLDivElement>("#hud-banner");
@@ -787,7 +786,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       speaker.onChange(null);
       jarvis.detach();
       fleetView.dispose();
-      systemsView?.dispose();
+      systemsView.dispose();
       intelView?.dispose();
       reverseView.dispose();
       usageView.dispose();
