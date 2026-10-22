@@ -218,6 +218,7 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
                 password_hash: password_hash(),
                 api_key: WEB_KEY.to_owned().into(),
                 full: true,
+                github_token: None,
             },
             Profile {
                 id: "powers".into(),
@@ -225,6 +226,7 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
                 password_hash: powers_hash(),
                 api_key: POWERS_KEY.to_owned().into(),
                 full: false,
+                github_token: None,
             },
         ],
         static_dir: Some(dir.0.clone()),
@@ -1462,4 +1464,51 @@ async fn directions_need_an_unlock_and_a_real_start() {
         let r = send(&h, bff(Method::GET, bad, Some(&walker), None)).await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
     }
+}
+
+#[tokio::test]
+async fn projects_are_each_profiles_own() {
+    let h = harness().await;
+    let r = send(&h, bff(Method::GET, "/web/projects", None, None)).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let walker = unlock(&h).await;
+    let powers = unlock_as(&h, "powers", POWERS_PASSWORD).await;
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/projects/local",
+            Some(&walker),
+            Some(json!({"name": "Mark II", "description": "flight tests", "session_id": "sesn_1"})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let id = r.json()["id"].as_i64().unwrap();
+    // No token in the harness: GitHub says why, Jarvis projects still list.
+    let r = send(&h, bff(Method::GET, "/web/projects", Some(&walker), None)).await;
+    let j = r.json();
+    assert_eq!(j["local"][0]["name"], "Mark II");
+    assert!(j["github"].is_null());
+    assert!(j["github_error"]
+        .as_str()
+        .unwrap()
+        .contains("no GitHub token"));
+    let r = send(&h, bff(Method::GET, "/web/projects", Some(&powers), None)).await;
+    assert_eq!(r.json()["local"], json!([]));
+    let path = format!("/web/projects/local/{id}/remove");
+    let r = send(&h, bff(Method::POST, &path, Some(&powers), Some(json!({})))).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "not his");
+    // A bad repo name is refused before GitHub is asked.
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/projects/github",
+            Some(&walker),
+            Some(json!({"name": "a b"})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
 }

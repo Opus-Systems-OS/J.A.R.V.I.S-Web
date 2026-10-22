@@ -213,6 +213,7 @@ mod tests {
             password_hash: String::new(),
             api_key: String::new().into(),
             full,
+            github_token: None,
         };
         let (owner, limited) = (p(true), p(false));
         for path in [

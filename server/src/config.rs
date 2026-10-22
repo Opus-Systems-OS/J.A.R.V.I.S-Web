@@ -24,6 +24,9 @@ pub struct Profile {
     /// The owner's profile: every area of the API, the credit ledger and
     /// the briefing. Anyone else gets the least-privilege set (`bff`).
     pub full: bool,
+    /// Their own GitHub token (classic: `repo`, `read:org`) for the Projects
+    /// tab: their repos and the org's. Never sent to a browser or logged.
+    pub github_token: Option<SecretString>,
 }
 
 impl std::fmt::Debug for Profile {
@@ -111,6 +114,19 @@ fn api_key(name: &str) -> Result<Option<SecretString>> {
     Ok(key)
 }
 
+/// A secret nothing depends on (a GitHub token): from `<NAME>_FILE`, else
+/// `<NAME>`. A missing, unreadable or empty file is just "not set" (a
+/// placeholder on the droplet is fine), so the site still starts.
+fn optional_secret(name: &str) -> Option<SecretString> {
+    match api_key(name) {
+        Ok(k) => k,
+        Err(e) => {
+            tracing::warn!("{name}: {e}; treated as not set");
+            None
+        }
+    }
+}
+
 /// The key in `file` when it names one (which must hold a key), else `env`.
 fn key_from(
     file_var: &str,
@@ -162,6 +178,7 @@ impl Config {
                 Error::Config("WEB_API_KEY_FILE (or WEB_API_KEY) is not set".to_owned())
             })?,
             full: true,
+            github_token: optional_secret("GITHUB_TOKEN"),
         }];
         match (
             optional("JARVIS_WEB_POWERS_PASSWORD_HASH"),
@@ -173,6 +190,7 @@ impl Config {
                 password_hash: argon2_hash("JARVIS_WEB_POWERS_PASSWORD_HASH", hash)?,
                 api_key: key,
                 full: false,
+                github_token: optional_secret("GITHUB_POWERS_TOKEN"),
             }),
             (None, None) => {}
             _ => {

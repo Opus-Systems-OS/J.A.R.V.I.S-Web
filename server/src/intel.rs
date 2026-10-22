@@ -144,6 +144,7 @@ pub struct Intel {
     pub(crate) fleet: Mutex<crate::layers::Fleet>,
     pub(crate) cams: Mutex<crate::cams::Index>,
     pub(crate) routes: crate::route::Routes,
+    pub(crate) projects: crate::projects::Cache,
 }
 
 pub(crate) fn json(body: Bytes) -> Response {
