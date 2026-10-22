@@ -10,6 +10,7 @@ import { compactBriefing, withLocalWeather, type Briefing } from "./briefing";
 import { compactJobs, type Job } from "./jobs";
 import * as location from "./location";
 import * as reminders from "./reminders";
+import { miles, minutes, shortName, type Route } from "./route";
 import * as watch from "./intel/watch";
 
 export interface ToolDef {
@@ -133,6 +134,36 @@ const TOOLS: ToolDef[] = [
   },
   {
     type: "custom",
+    name: "directions",
+    description:
+      "Driving directions to an address, business or place, from where he is (or from `from`, a place he names): distance, " +
+      "time, arrival time and the first steps. Then ask him exactly: \"Shall I open this in Apple Maps, or show it here?\" " +
+      "and call show_route with his answer.",
+    input_schema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "Where to: an address, a business or a place, e.g. LAX or 123 Main St, Austin" },
+        from: { type: "string", description: "Only if he names a start other than where he is" },
+      },
+      required: ["to"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "show_route",
+    description:
+      "Show the route the last directions call found: apple_maps puts an Open in Apple Maps button in the transcript (he " +
+      "taps it; on an iPhone or Mac it opens the Maps app), here draws it on the Intel globe with turn-by-turn steps.",
+    input_schema: {
+      type: "object",
+      properties: { where: { type: "string", enum: ["apple_maps", "here"] } },
+      required: ["where"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
     name: "watch_add",
     description:
       "Add to his Intel watchlist: the HUD then tells him aloud when a new story matches (checked every 5 minutes, and at " +
@@ -204,6 +235,8 @@ const TOOLS: ToolDef[] = [
 ];
 
 type Json = Record<string, unknown>;
+/** The route the last `directions` call found, for `show_route`. */
+let lastRoute: Route | null = null;
 type IntelFeed = import("./intel/model").Feed;
 
 /** `/v1/ops` → `{services: [{id, name, state, headline, checked_at}]}`, trimmed. */
@@ -257,7 +290,7 @@ function compactHere(): unknown {
 export async function runTool(
   name: string,
   input: unknown,
-  ui: { openPanel(tab: string): void; jobs(): Job[]; full: boolean },
+  ui: { openPanel(tab: string): void; showRoute(r: Route, where: "apple_maps" | "here"): void; jobs(): Job[]; full: boolean },
 ): Promise<{ content: string; is_error?: boolean }> {
   const args = (input ?? {}) as Record<string, unknown>;
   if (!ui.full && OWNER_ONLY.has(name)) return { content: `this page has no tool named ${name}`, is_error: true };
@@ -318,6 +351,37 @@ export async function runTool(
         if (!Number.isInteger(id)) return { content: "id must be a reminder id from list_reminders", is_error: true };
         await reminders.cancel(id);
         return { content: `cancelled reminder ${id}` };
+      }
+      case "directions": {
+        const to = typeof args.to === "string" ? args.to.trim() : "";
+        if (!to) return { content: "need to: where he wants to go", is_error: true };
+        let start: { lat: number; lon: number } | null = location.here();
+        const from = typeof args.from === "string" ? args.from.trim() : "";
+        if (from) start = await webGet<{ lat: number; lon: number }>(`local?q=${encodeURIComponent(from)}`);
+        if (!start) return { content: "I don't know where he is yet: ask him, then set_location, or give from", is_error: true };
+        const r = await webGet<Route>(`route?to=${encodeURIComponent(to)}&from=${start.lat},${start.lon}`);
+        lastRoute = r;
+        return {
+          content: JSON.stringify({
+            to: r.to.name,
+            distance: miles(r.distance_m),
+            time: minutes(r.duration_s),
+            arrive_at: reminders.localIso(new Date(Date.now() + r.duration_s * 1000)).slice(11, 16),
+            first_steps: r.steps.slice(0, 4).map((s) => s.text),
+            next: "Ask him: \"Shall I open this in Apple Maps, or show it here?\" Times are without live traffic.",
+          }),
+        };
+      }
+      case "show_route": {
+        if (!lastRoute) return { content: "no route yet: call directions first", is_error: true };
+        const where = args.where === "here" ? "here" : "apple_maps";
+        ui.showRoute(lastRoute, where);
+        return {
+          content:
+            where === "here"
+              ? `showing the route to ${shortName(lastRoute)} on the Intel globe`
+              : "an Open in Apple Maps button is in the transcript: tell him to tap it",
+        };
       }
       case "watch_add": {
         const w = await watch.resolve(args);

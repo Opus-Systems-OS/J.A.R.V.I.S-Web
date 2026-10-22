@@ -88,6 +88,13 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   or both. The HUD holding the mic checks the feed every 5 min and speaks new
   matches; what was said is recorded here (14 days) so no two HUDs repeat it
   and the next unlock catches up on what came in while none was open.
+- **Directions come through here too.** Jarvis's `directions` tool asks
+  `/web/route`, which finds the destination with OpenStreetMap's Nominatim
+  (one search a second at most, as its policy asks) and the driving route
+  with the public OSRM server, from the start rounded to about a hundred
+  metres; only a ten-minute cache is kept. He then asks "Apple Maps, or
+  here?": Apple Maps is a link he taps in the transcript (browsers only open
+  what a tap opens), here draws the route on the Intel globe with its steps.
 - **Reverse runs in Jarvis's sandbox, never here.** The Reverse tab hands
   Jarvis a target (an uploaded file, a link, or a path in his sandbox) and a
   question as one silent `[rea]` turn; he installs

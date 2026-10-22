@@ -16,6 +16,7 @@ import { html, setHtml } from "../../html";
 import { leadLine, link, renderBrief } from "../brief";
 import { scannerUrl } from "./geo";
 import { localZone } from "../location";
+import { appleMapsUrl, miles, minutes, shortName, stepDistance, type Route } from "../route";
 import { Globe, type GlobeNode } from "./globe";
 import { TabMeter } from "./radio";
 import * as watch from "./watch";
@@ -226,7 +227,7 @@ export class IntelView {
   private watches: watch.Watch[] = [];
   /** Stops the camera or ATC meter running in the dossier, if one is. */
   private stopMedia: (() => void) | null = null;
-  /** The dossier is showing "This view": a feed refresh leaves it up. */
+  /** The dossier is showing "This view" or a route: a feed refresh leaves it up. */
   private regionShown = false;
 
   constructor(
@@ -768,6 +769,45 @@ export class IntelView {
       ul.append(li);
     }
     d.append(ul);
+  }
+
+  /** A route from Jarvis's `directions`: drawn on the globe, steps in the dossier. */
+  showRoute(r: Route) {
+    this.selectNode(null, false);
+    this.regionShown = true;
+    this.globe.setRoute(r.line);
+    const d = this.dossier();
+    d.replaceChildren();
+    d.style.removeProperty("--cat");
+    const head = el("header", "intel-dossier-head");
+    head.append(
+      el("span", "intel-kicker", "Route · driving"),
+      el("h3", "intel-dossier-title", shortName(r)),
+      el("span", "intel-coords", r.to.name),
+    );
+    const dl = el("dl", "intel-facts");
+    const arrive = new Date(Date.now() + r.duration_s * 1000).toLocaleTimeString("en-US", { timeZone: localZone(), hour: "numeric", minute: "2-digit" });
+    for (const [k, v] of [
+      ["Distance", miles(r.distance_m)],
+      ["Time", `${minutes(r.duration_s)} (no live traffic)`],
+      ["Arrive", arrive],
+      ["Source", "OpenStreetMap: Nominatim and OSRM"],
+    ])
+      dl.append(el("dt", "", k), el("dd", "", v));
+    const steps = el("ol", "intel-steps");
+    for (const s of r.steps) {
+      const li = el("li", "", s.text);
+      if (s.distance_m > 0) li.append(el("span", "intel-step-d", ` · ${stepDistance(s.distance_m)}`));
+      steps.append(li);
+    }
+    const clear = el<HTMLButtonElement>("button", "btn-ghost btn-small", "Clear route");
+    clear.type = "button";
+    clear.onclick = () => {
+      this.globe.setRoute(null);
+      this.regionShown = false;
+      this.renderIdle();
+    };
+    d.append(head, dl, this.linkLine(appleMapsUrl(r), "Open in Apple Maps"), steps, clear);
   }
 
   private renderRegion() {

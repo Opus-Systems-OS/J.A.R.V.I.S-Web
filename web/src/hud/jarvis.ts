@@ -10,6 +10,7 @@
 import { ApiError, get, post, type Profile } from "../api";
 import type { Job } from "./jobs";
 import { whereLine } from "./location";
+import type { Route } from "./route";
 import { runTool, toolsFor } from "./tools";
 import type { OutputFile, Rendered, SessionEvent, Transcript } from "./transcript";
 
@@ -85,6 +86,8 @@ export interface JarvisEvents {
   /** This session hit Anthropic's billing error (credit exhausted). */
   onBillingError?(): void;
   openPanel(tab: string): void;
+  /** `show_route`: hand a route to Apple Maps (a tappable link) or the globe. */
+  showRoute(route: Route, where: "apple_maps" | "here"): void;
   /** The jobs this HUD is watching (for the `fleet_jobs` tool). */
   jobs(): Job[];
   /** Every event of the conversation, for other views (the terminal). */
@@ -353,6 +356,7 @@ export class Jarvis {
     this.answered.add(toolUseId);
     const result = await runTool(name, input, {
       openPanel: (t) => this.ev.openPanel(t),
+      showRoute: (r, w) => this.ev.showRoute(r, w),
       jobs: () => this.ev.jobs(),
       full: this.profile.full,
     });

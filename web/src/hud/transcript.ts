@@ -90,6 +90,21 @@ export class Transcript {
     this.scroll(true);
   }
 
+  /** A tappable link (the Apple Maps hand-off): browsers only open what a tap opens. */
+  link(text: string, href: string) {
+    const row = document.createElement("div");
+    row.className = "entry entry-outputs";
+    const a = document.createElement("a");
+    a.className = "file-chip file-chip-out";
+    a.href = href;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = text;
+    row.appendChild(a);
+    this.list.appendChild(row);
+    this.scroll(true);
+  }
+
   render(ev: SessionEvent): Rendered {
     if (ev.id) {
       if (this.seen.has(ev.id)) return { kind: "other" };

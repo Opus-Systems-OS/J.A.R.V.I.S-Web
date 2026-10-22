@@ -143,6 +143,7 @@ pub struct Intel {
     pub(crate) layers: crate::layers::Slots,
     pub(crate) fleet: Mutex<crate::layers::Fleet>,
     pub(crate) cams: Mutex<crate::cams::Index>,
+    pub(crate) routes: crate::route::Routes,
 }
 
 pub(crate) fn json(body: Bytes) -> Response {

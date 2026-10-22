@@ -23,6 +23,7 @@ import { agentName, JobWatch, type Job } from "./jobs";
 import { WatchAlerts } from "./intel/watch";
 import { ReminderWatch } from "./reminders";
 import { Transcript, type OutputFile } from "./transcript";
+import { appleMapsUrl, shortName } from "./route";
 import { isoSeconds, UsageView } from "./usage";
 
 const DRAWER_KEY = "jarvis.drawer";
@@ -373,6 +374,14 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       meta.textContent = `$${(cost / 100).toFixed(2)}${cap ? ` of $${(cap / 100).toFixed(2)}` : ""}`;
     },
     openPanel,
+    showRoute: (route, where) => {
+      if (where === "apple_maps") {
+        transcript.link(`Open in Apple Maps · ${shortName(route)}`, appleMapsUrl(route));
+        return;
+      }
+      openPanel("Intel");
+      void intelLoading?.then(() => intelView?.showRoute(route));
+    },
     onEvent: (e) => {
       terminal.feed(e);
       reverseView.feed(e);

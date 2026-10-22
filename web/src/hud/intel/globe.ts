@@ -131,6 +131,7 @@ export class Globe {
   private dim = false;
   private readonly layers = new Map<string, Mark[]>();
   private lastMove = 0;
+  private route: { type: "LineString"; coordinates: [number, number][] } | null = null;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -201,6 +202,16 @@ export class Globe {
     const lon = ((((-this.rotation[0] + 180) % 360) + 360) % 360) - 180;
     const half = Math.min(this.width, this.height) / 2;
     return { lat: -this.rotation[1], lon, radiusDeg: Math.asin(Math.min(1, half / this.projection.scale())) / RAD };
+  }
+
+  /** Draw a route (`[lon, lat]` pairs) and fly to it; null clears it. */
+  setRoute(line: [number, number][] | null) {
+    this.route = line && line.length > 1 ? { type: "LineString", coordinates: line } : null;
+    if (!this.route || !line) return;
+    const [a, b] = [line[0], line[line.length - 1]];
+    const [lon, lat] = geoInterpolate(a, b)(0.5);
+    // The whole drive in view: the farther apart, the less zoom.
+    this.flyTo(lat, lon, 0.35 / Math.max(geoDistance(a, b), 0.001));
   }
 
   home(world = false) {
@@ -456,6 +467,21 @@ export class Globe {
 
     this.drawMarks(true, dim);
     this.drawMarks(false, dim);
+    if (this.route) {
+      ctx.shadowColor = "rgba(127, 214, 255, 0.9)";
+      ctx.shadowBlur = 10;
+      stroke(this.route, "rgba(155, 231, 255, 0.95)", 2.6);
+      ctx.shadowBlur = 0;
+      const ends = this.route.coordinates;
+      for (const [i, p] of [ends[0], ends[ends.length - 1]].entries()) {
+        const xy = this.projection(p);
+        if (!xy || geoDistance(p, [-this.rotation[0], -this.rotation[1]]) > Math.PI / 2) continue;
+        ctx.beginPath();
+        ctx.arc(xy[0], xy[1], i ? 5 : 4, 0, Math.PI * 2);
+        ctx.fillStyle = i ? "#ffd9a8" : "#9be7ff";
+        ctx.fill();
+      }
+    }
     this.drawNodes(t);
     this.readout(w, h);
   }
