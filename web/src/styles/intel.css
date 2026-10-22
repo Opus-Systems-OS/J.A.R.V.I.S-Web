@@ -274,6 +274,20 @@
   padding-top: 0.15rem;
 }
 
+/* ATC equalizer in the dossier */
+.intel-radio {
+  margin: 0 0 0.85rem;
+}
+
+.intel-radio-eq {
+  display: block;
+  width: 100%;
+  height: 72px;
+  margin-bottom: 0.4rem;
+  border: 1px solid var(--line);
+  background: rgba(14, 6, 2, 0.6);
+}
+
 /* Traffic camera in the dossier */
 .intel-cam {
   position: relative;

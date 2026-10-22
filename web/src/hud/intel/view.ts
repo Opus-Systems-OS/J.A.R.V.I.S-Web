@@ -17,6 +17,7 @@ import { leadLine, link, renderBrief } from "../brief";
 import { scannerUrl } from "./geo";
 import { localZone } from "../location";
 import { Globe, type GlobeNode } from "./globe";
+import { TabMeter } from "./radio";
 import * as watch from "./watch";
 import { distanceKm } from "./watch";
 import { LAYERS, layerMarks, thingPrompt, type LayerData, type LayerId, type Thing } from "./layers";
@@ -223,8 +224,8 @@ export class IntelView {
   private readonly things = new Map<string, Thing>();
   private layerTimer = 0;
   private watches: watch.Watch[] = [];
-  /** Stops the camera playing in the dossier, if one is. */
-  private stopCam: (() => void) | null = null;
+  /** Stops the camera or ATC meter running in the dossier, if one is. */
+  private stopMedia: (() => void) | null = null;
   /** The dossier is showing "This view": a feed refresh leaves it up. */
   private regionShown = false;
 
@@ -277,7 +278,7 @@ export class IntelView {
   hide() {
     this.visible = false;
     // A hidden tab streams nothing; showing it again reopens the camera.
-    this.closeCam();
+    this.closeMedia();
     this.globe.stop();
     window.clearInterval(this.timer);
     window.clearInterval(this.layerTimer);
@@ -543,6 +544,7 @@ export class IntelView {
     if (t.camera) d.append(this.camBlock(t.camera));
     d.append(dl);
     for (const [text, url] of t.links ?? []) d.append(this.linkLine(url, text));
+    if (t.radio) d.append(this.radioBlock());
     d.append(this.briefBlock(key, "Analyze with Jarvis", () => thingPrompt(t)));
   }
 
@@ -582,13 +584,82 @@ export class IntelView {
   }
 
   private dossier(): HTMLElement {
-    this.closeCam();
+    this.closeMedia();
     return this.$("#intel-dossier");
   }
 
-  private closeCam() {
-    this.stopCam?.();
-    this.stopCam = null;
+  private closeMedia() {
+    this.stopMedia?.();
+    this.stopMedia = null;
+  }
+
+  /** An equalizer drawn from the LiveATC tab you share (`radio.ts`). */
+  private radioBlock(): HTMLElement {
+    const N = 40;
+    const box = el("div", "intel-radio");
+    const canvas = el<HTMLCanvasElement>("canvas", "intel-radio-eq");
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", "ATC audio level");
+    const status = el("p", "intel-hint", "Open LiveATC above, start a feed, then share that tab here.");
+    const button = el<HTMLButtonElement>("button", "btn-ghost btn-small", "Visualize the LiveATC tab");
+    button.type = "button";
+    box.append(canvas, status, button);
+    let meter: TabMeter | null = null;
+    let raf = 0;
+    const draw = () => {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const w = Math.max(1, canvas.clientWidth);
+      const h = Math.max(1, canvas.clientHeight);
+      if (canvas.width !== Math.round(w * dpr)) canvas.width = Math.round(w * dpr);
+      if (canvas.height !== Math.round(h * dpr)) canvas.height = Math.round(h * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      const levels = meter?.live ? meter.read(N) : new Array<number>(N).fill(0);
+      const gap = 2;
+      const bw = (w - gap * (N - 1)) / N;
+      levels.forEach((v, i) => {
+        // A sliver always shows, so the idle meter reads as a meter.
+        const bh = Math.max(2, v * (h - 4));
+        ctx.fillStyle = v > 0.75 ? "#ffd9a8" : v > 0.4 ? "#ffb25c" : "#ff7a1a";
+        ctx.globalAlpha = meter?.live ? 0.95 : 0.3;
+        ctx.fillRect(i * (bw + gap), h - bh, bw, bh);
+      });
+      ctx.globalAlpha = 1;
+      raf = requestAnimationFrame(draw);
+    };
+    const stop = () => {
+      cancelAnimationFrame(raf);
+      meter?.close();
+      meter = null;
+    };
+    const idle = (text: string) => {
+      meter?.close();
+      meter = null;
+      status.textContent = text;
+      button.textContent = "Visualize the LiveATC tab";
+    };
+    button.onclick = async () => {
+      if (meter) return idle("Stopped. Share the tab again to resume.");
+      const m = new TabMeter(); // inside the click, so its audio may run
+      meter = m;
+      status.textContent = "Pick the LiveATC tab and tick “Also share tab audio”.";
+      try {
+        await m.listen(() => {
+          if (meter === m) idle("Sharing stopped.");
+        });
+        if (meter !== m) return m.close();
+        status.textContent = "Live from your LiveATC tab. Nothing is recorded or sent anywhere.";
+        button.textContent = "Stop";
+      } catch (e) {
+        if (meter === m) idle(e instanceof DOMException && e.name === "NotAllowedError" ? "Sharing was cancelled." : e instanceof Error ? e.message : String(e));
+        m.close();
+      }
+    };
+    raf = requestAnimationFrame(draw);
+    this.stopMedia = stop;
+    return box;
   }
 
   /** A camera's live stream (native HLS on Safari, hls.js elsewhere), or
@@ -663,7 +734,7 @@ export class IntelView {
           })
           .catch(fail);
     } else still();
-    this.stopCam = () => {
+    this.stopMedia = () => {
       stopped = true;
       window.clearInterval(timer);
       endVideo();

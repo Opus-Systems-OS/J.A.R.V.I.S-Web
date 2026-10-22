@@ -52,6 +52,8 @@ export interface Thing {
   links?: [string, string][];
   /** A traffic camera, played in the dossier through `/web/intel/cam/{id}`. */
   camera?: { id: string; live: boolean; still: boolean };
+  /** An airport: the dossier offers an equalizer for its LiveATC tab (`radio.ts`). */
+  radio?: true;
   pos(now: number): [number, number] | null;
 }
 
@@ -293,6 +295,7 @@ function airport([icao, iata, name, city, country, lat, lon, elev]: Airport): Th
       ["Elevation", fmt(elev, "ft")],
     ],
     links: [["Listen to ATC live (LiveATC)", `https://www.liveatc.net/search/?icao=${encodeURIComponent(icao)}`]],
+    radio: true,
     pos: () => [lat, lon],
     color: "#ffd9a8",
     label: `${iata || icao} · ${city || name}`,
