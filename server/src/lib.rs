@@ -21,6 +21,7 @@ pub mod intel;
 pub mod layers;
 pub mod local;
 pub mod mic;
+pub mod projects;
 pub mod reminders;
 pub mod request_id;
 pub mod route;
@@ -160,6 +161,21 @@ pub fn app(state: AppState) -> Router {
         .route("/web/watches/seen", post(watches::seen))
         .route("/web/local", get(local::get))
         .route("/web/route", get(route::get))
+        .route("/web/projects", get(projects::list))
+        .route("/web/projects/github", post(projects::create_repo))
+        .route(
+            "/web/projects/github/{owner}/{repo}/models",
+            get(projects::models),
+        )
+        .route(
+            "/web/projects/github/{owner}/{repo}/file",
+            get(projects::file),
+        )
+        .route("/web/projects/local", post(projects::create_local))
+        .route(
+            "/web/projects/local/{id}/remove",
+            post(projects::remove_local),
+        )
         .route_layer(from_fn_with_state(state.clone(), auth::require_session));
 
     let api = Router::new()

@@ -88,6 +88,15 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   or both. The HUD holding the mic checks the feed every 5 min and speaks new
   matches; what was said is recorded here (14 days) so no two HUDs repeat it
   and the next unlock catches up on what came in while none was open.
+- **Projects use each profile's own GitHub token.** `GITHUB_TOKEN_FILE`
+  (Mr. Walker) and `GITHUB_POWERS_TOKEN_FILE` (Mr. Powers) hold classic
+  tokens (`repo`, `read:org`), read only by `jarvis-web` and sent only to
+  `api.github.com`. A profile sees its own account's repos and the
+  Opus-Systems-OS org's, and can create a repo in either. A repo's 3D models
+  (`.glb .gltf .stl`, from its tree, up to 40 MB) are relayed one at a time
+  as an attachment under `Content-Security-Policy: sandbox`, never rendered
+  by the browser as a page. A missing or empty token file just means "no
+  GitHub yet". Jarvis projects (ones that live here) are kept per profile.
 - **Directions come through here too.** Jarvis's `directions` tool asks
   `/web/route`, which finds the destination with OpenStreetMap's Nominatim
   (one search a second at most, as its policy asks) and the driving route

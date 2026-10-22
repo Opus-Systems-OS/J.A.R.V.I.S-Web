@@ -73,6 +73,16 @@ CREATE TABLE IF NOT EXISTS watches (
   radius_km   REAL,
   created_at  INTEGER NOT NULL
 );
+-- Jarvis projects (`projects.rs`): ones that live here, not on GitHub. The
+-- session is the Jarvis conversation it was started in (its outputs).
+CREATE TABLE IF NOT EXISTS projects (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile      TEXT NOT NULL,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL,
+  session_id   TEXT,
+  created_at   INTEGER NOT NULL
+);
 -- Feed items already announced for a profile, so no two HUDs say one twice.
 CREATE TABLE IF NOT EXISTS watch_alerts (
   profile  TEXT NOT NULL,
@@ -133,6 +143,16 @@ pub struct Watch {
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub radius_km: Option<f64>,
+    pub created_at: i64,
+}
+
+/// A Jarvis project: one that lives here rather than on GitHub.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Project {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub session_id: Option<String>,
     pub created_at: i64,
 }
 
@@ -478,6 +498,71 @@ impl Db {
         })
     }
 
+    // ---- Jarvis projects ---------------------------------------------------------
+
+    pub fn projects(&self, profile: &str) -> Result<Vec<Project>> {
+        self.with(|c| {
+            c.prepare(
+                "SELECT id, name, description, session_id, created_at FROM projects
+                 WHERE profile = ?1 ORDER BY created_at DESC, id DESC",
+            )?
+            .query_map([profile], |r| {
+                Ok(Project {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    description: r.get(2)?,
+                    session_id: r.get(3)?,
+                    created_at: r.get(4)?,
+                })
+            })?
+            .collect()
+        })
+    }
+
+    /// `None` when `profile` already has `max` projects.
+    pub fn add_project(
+        &self,
+        profile: &str,
+        name: &str,
+        description: &str,
+        session_id: Option<&str>,
+        max: i64,
+    ) -> Result<Option<Project>> {
+        let now = now();
+        self.with(|c| {
+            let n: i64 = c.query_row(
+                "SELECT COUNT(*) FROM projects WHERE profile = ?1",
+                [profile],
+                |r| r.get(0),
+            )?;
+            if n >= max {
+                return Ok(None);
+            }
+            c.execute(
+                "INSERT INTO projects (profile, name, description, session_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![profile, name, description, session_id, now],
+            )?;
+            Ok(Some(Project {
+                id: c.last_insert_rowid(),
+                name: name.to_owned(),
+                description: description.to_owned(),
+                session_id: session_id.map(str::to_owned),
+                created_at: now,
+            }))
+        })
+    }
+
+    pub fn remove_project(&self, profile: &str, id: i64) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM projects WHERE id = ?1 AND profile = ?2",
+                params![id, profile],
+            )
+            .map(|n| n == 1)
+        })
+    }
+
     // ---- watchlist ---------------------------------------------------------------
 
     pub fn watches(&self, profile: &str) -> Result<Vec<Watch>> {
@@ -635,6 +720,26 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projects_are_per_profile_and_capped() {
+        let db = Db::in_memory().unwrap();
+        let p = db
+            .add_project("walker", "Iron Suit", "Mk 2", Some("sesn_1"), 2)
+            .unwrap()
+            .unwrap();
+        db.add_project("walker", "Two", "", None, 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            db.add_project("walker", "Three", "", None, 2).unwrap(),
+            None
+        );
+        assert!(db.projects("powers").unwrap().is_empty());
+        assert!(!db.remove_project("powers", p.id).unwrap(), "not his");
+        assert!(db.remove_project("walker", p.id).unwrap());
+        assert_eq!(db.projects("walker").unwrap().len(), 1);
+    }
 
     #[test]
     fn watches_are_per_profile_and_alerts_said_once() {
