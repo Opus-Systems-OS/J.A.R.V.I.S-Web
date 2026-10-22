@@ -23,6 +23,7 @@ pub mod local;
 pub mod mic;
 pub mod reminders;
 pub mod request_id;
+pub mod route;
 pub mod watches;
 
 use axum::http::{header, HeaderName, HeaderValue};
@@ -158,6 +159,7 @@ pub fn app(state: AppState) -> Router {
         .route("/web/watches/{id}/remove", post(watches::remove))
         .route("/web/watches/seen", post(watches::seen))
         .route("/web/local", get(local::get))
+        .route("/web/route", get(route::get))
         .route_layer(from_fn_with_state(state.clone(), auth::require_session));
 
     let api = Router::new()

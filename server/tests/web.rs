@@ -1444,3 +1444,22 @@ async fn camera_relay_needs_an_unlock_and_a_known_camera() {
         assert_eq!(r.status, StatusCode::NOT_FOUND, "{path}");
     }
 }
+
+#[tokio::test]
+async fn directions_need_an_unlock_and_a_real_start() {
+    let h = harness().await;
+    let path = "/web/route?to=LAX&from=34.16,-118.64";
+    assert_eq!(
+        send(&h, bff(Method::GET, path, None, None)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    // Refused before anything leaves this box.
+    let walker = unlock(&h).await;
+    for bad in [
+        "/web/route?to=LAX&from=200,0",
+        "/web/route?to=%20&from=34,-118",
+    ] {
+        let r = send(&h, bff(Method::GET, bad, Some(&walker), None)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+}
