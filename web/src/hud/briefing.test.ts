@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { briefingLines, calendarLine, mailLine, spokenTime, weatherLine, withLocalWeather, type Briefing } from "./briefing";
-import { localIso, reminderLine, resolveAt } from "./reminders";
+import { localIso, nextDue, quiet, reminderLine, resolveAt } from "./reminders";
 
 const LA = "America/Los_Angeles";
 // 2026-09-28 08:30 in Calabasas (PDT).
@@ -81,6 +81,31 @@ describe("reminders", () => {
     expect(resolveAt({ at: "2026-11-01T01:30" }, MORNING, "America/New_York")).toMatch(/^2026-11-01T01:30:00-0[45]:00$/);
     // A wall time that never happens (spring forward) is refused.
     expect(resolveAt({ at: "2026-03-08T02:30" }, MORNING, LA)).toBeNull();
+  });
+
+  it("repeat at the same wall time, across a clock change", () => {
+    const at = (d: string) => new Date(d);
+    const daily = { due_at: "2026-10-31T14:00:00Z", repeat: "daily", wall: "07:00" };
+    expect(nextDue(daily, at("2026-10-31T14:00:30Z"), LA)).toBe("2026-11-01T07:00:00-08:00");
+    // Friday's weekday reminder comes back on Monday.
+    const weekdays = { due_at: "2026-10-30T15:00:00Z", repeat: "weekdays", wall: "08:00" };
+    expect(nextDue(weekdays, at("2026-10-30T15:00:30Z"), LA)).toBe("2026-11-02T08:00:00-08:00");
+    // Monday 08:30: later today if it's still ahead, else the next day named.
+    expect(nextDue({ due_at: "", repeat: "weekly:1,3", wall: "09:00" }, MORNING, LA)).toBe("2026-09-28T09:00:00-07:00");
+    expect(nextDue({ due_at: "", repeat: "weekly:1,3", wall: "08:00" }, MORNING, LA)).toBe("2026-09-30T08:00:00-07:00");
+    // Missed for days: the next one only (Sep 20 + 3n).
+    expect(nextDue({ due_at: "2026-09-20T16:00:00Z", repeat: "every:3", wall: "09:00" }, MORNING, LA)).toBe("2026-09-29T09:00:00-07:00");
+    expect(nextDue({ due_at: "2026-09-20T14:00:00Z", repeat: "daily", wall: "07:00" }, MORNING, LA)).toBe("2026-09-29T07:00:00-07:00");
+    // 02:30 doesn't happen on 2027-03-14: an hour later.
+    expect(nextDue({ due_at: "", repeat: "daily", wall: "02:30" }, at("2027-03-13T11:00:00Z"), LA)).toBe("2027-03-14T03:30:00-07:00");
+    expect(nextDue({ due_at: "", repeat: null, wall: null }, MORNING, LA)).toBeNull();
+  });
+
+  it("wait out quiet hours", () => {
+    expect(quiet(new Date("2026-09-28T07:00:00Z"), LA)).toBe(true); // midnight
+    expect(quiet(new Date("2026-09-28T11:59:00Z"), LA)).toBe(true); // 04:59
+    expect(quiet(new Date("2026-09-28T12:00:00Z"), LA)).toBe(false); // 05:00
+    expect(quiet(new Date("2026-09-28T06:59:00Z"), LA)).toBe(false); // 23:59
   });
 
   it("are spoken plainly", () => {

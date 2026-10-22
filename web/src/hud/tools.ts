@@ -258,13 +258,18 @@ const TOOLS: ToolDef[] = [
     description:
       "Set a reminder that the HUD speaks when it is due (or at his next unlock if no HUD is open). Give either " +
       "in_minutes, or at as his local wall time 'YYYY-MM-DDTHH:MM' (or RFC 3339 with an offset). If you don't know " +
-      "today's date, call list_reminders first: it returns the current time. Confirm the time back to him in words.",
+      "today's date, call list_reminders first: it returns the current time. For one that repeats ('every weekday at 8'), " +
+      "add repeat and give at as its first time. Confirm the time (and how it repeats) back to him in words.",
     input_schema: {
       type: "object",
       properties: {
         text: { type: "string", description: "What to remind him of, as it should be said: 'call Josh about the invoice'" },
         at: { type: "string", description: "His local wall time, e.g. 2026-09-29T09:00" },
         in_minutes: { type: "number", description: "Minutes from now, instead of at" },
+        repeat: {
+          type: "string",
+          description: "daily, weekdays, weekly:1,3,5 (days, 0 = Sunday … 6 = Saturday) or every:N (every N days)",
+        },
       },
       required: ["text"],
       additionalProperties: false,
@@ -273,13 +278,55 @@ const TOOLS: ToolDef[] = [
   {
     type: "custom",
     name: "list_reminders",
-    description: "The reminders not yet spoken (id, text, due_at, due), and the current time where he is as `now`.",
+    description:
+      "The reminders not yet spoken (id, text, due_at, due, repeat), his open notes and tasks (id, kind, text), " +
+      "and the current time where he is as `now`.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     type: "custom",
     name: "cancel_reminder",
-    description: "Cancel a reminder by the id list_reminders gave.",
+    description: "Cancel a reminder (all of it, if it repeats) by the id list_reminders gave.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "number" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "snooze_reminder",
+    description: "Say a reminder again in a few minutes ('snooze', 'remind me again in 20'): the one just spoken, unless he names another.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "number", description: "From list_reminders; leave out for the one just spoken" },
+        minutes: { type: "number", description: "Default 10" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "take_note",
+    description:
+      "Save a note or task he gives without a time ('note: look into the new XREAL firmware'). Save it at once, as he said it, " +
+      "without follow-up questions. To give one a time later, set_reminder then close_note.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string" },
+        kind: { type: "string", enum: ["note", "task"], description: "task for something to do; note otherwise" },
+      },
+      required: ["text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "close_note",
+    description: "Mark a note or task done, or remove it, by the id list_reminders gave.",
     input_schema: {
       type: "object",
       properties: { id: { type: "number" } },
@@ -397,16 +444,29 @@ export async function runTool(
             is_error: true,
           };
         }
-        const r = await reminders.create(text, at);
-        return { content: JSON.stringify({ set: { id: r.id, text: r.text, due_at: reminders.localIso(new Date(r.due_at)) }, now: reminders.localNow() }) };
+        const repeat = typeof args.repeat === "string" && args.repeat.trim() ? args.repeat.trim() : undefined;
+        const r = await reminders.create(text, at, repeat);
+        return {
+          content: JSON.stringify({
+            set: { id: r.id, text: r.text, due_at: reminders.localIso(new Date(r.due_at)), repeat: r.repeat ?? undefined },
+            now: reminders.localNow(),
+          }),
+        };
       }
       case "list_reminders": {
-        const list = await reminders.pending();
+        const [list, notes] = await Promise.all([reminders.pending(), reminders.notes()]);
         return {
           content: JSON.stringify({
             now: reminders.localNow(),
             time_zone: location.localZone(),
-            reminders: list.map((r) => ({ id: r.id, text: r.text, due_at: reminders.localIso(new Date(r.due_at)), due: r.due })),
+            reminders: list.map((r) => ({
+              id: r.id,
+              text: r.text,
+              due_at: reminders.localIso(new Date(r.due_at)),
+              due: r.due,
+              repeat: r.repeat ?? undefined,
+            })),
+            notes: notes.map((n) => ({ id: n.id, kind: n.kind, text: n.text })),
           }),
         };
       }
@@ -415,6 +475,25 @@ export async function runTool(
         if (!Number.isInteger(id)) return { content: "id must be a reminder id from list_reminders", is_error: true };
         await reminders.cancel(id);
         return { content: `cancelled reminder ${id}` };
+      }
+      case "snooze_reminder": {
+        const id = args.id === undefined ? undefined : Number(args.id);
+        if (id !== undefined && !Number.isInteger(id)) return { content: "id must be a reminder id from list_reminders", is_error: true };
+        const minutes = typeof args.minutes === "number" ? Math.round(args.minutes) : undefined;
+        const r = await reminders.snooze(id, minutes);
+        return { content: JSON.stringify({ snoozed: { id: r.id, text: r.text, due_at: reminders.localIso(new Date(r.due_at)) } }) };
+      }
+      case "take_note": {
+        const text = typeof args.text === "string" ? args.text.trim() : "";
+        if (!text) return { content: "need text", is_error: true };
+        const n = await reminders.addNote(text, args.kind === "task" ? "task" : "note");
+        return { content: JSON.stringify({ saved: { id: n.id, kind: n.kind, text: n.text } }) };
+      }
+      case "close_note": {
+        const id = Number(args.id);
+        if (!Number.isInteger(id)) return { content: "id must be a note id from list_reminders", is_error: true };
+        await reminders.closeNote(id);
+        return { content: `closed note ${id}` };
       }
       case "projects_list": {
         const l = await listProjects();

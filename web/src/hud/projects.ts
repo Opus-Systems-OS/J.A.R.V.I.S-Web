@@ -3,6 +3,8 @@
 // token, `projects.rs`). Selecting one shows what it is and its 3D models; a
 // model opens in the spinning viewer (`model3d.ts`). New project asks the
 // question Jarvis asks too: a GitHub repository, or a project on here?
+// Above them, his pending reminders and open notes (`reminders.ts`), to read;
+// Jarvis cancels and completes them.
 //
 // Text from GitHub and the API goes in with textContent; the skeleton is the
 // only markup, and it goes through `html`.
@@ -12,6 +14,8 @@ import { html, setHtml } from "../html";
 import { link } from "./brief";
 import { ago } from "./fleet";
 import { kindOf, renderFile, type FileKind } from "./fileview";
+import { localZone } from "./location";
+import { notes, pending, type Note, type Reminder } from "./reminders";
 import type { OutputFile } from "./transcript";
 
 export interface Repo {
@@ -99,6 +103,7 @@ const el = <T extends HTMLElement>(tag: string, cls?: string, text?: string): T 
 
 export class ProjectsView {
   private listing: Listing | null = null;
+  private reminders: { list: Reminder[]; notes: Note[] } | null = null;
   private selected: Key | null = null;
   private filter = "";
   private closeViewer: (() => void) | null = null;
@@ -164,7 +169,11 @@ export class ProjectsView {
 
   private async load() {
     try {
+      // Reminders unavailable: the projects still show.
+      const asked = Promise.all([pending(), notes()]).catch(() => null);
       this.listing = await listProjects();
+      const r = await asked;
+      this.reminders = r && { list: r[0], notes: r[1] };
     } catch (e) {
       const groups = this.$("#proj-groups");
       groups.replaceChildren(el("p", "panel-empty", `Projects unavailable: ${e instanceof Error ? e.message : String(e)}`));
@@ -200,10 +209,28 @@ export class ProjectsView {
       };
       return li;
     };
+    const plain = (name: string, detail: string) => {
+      const li = el<HTMLLIElement>("li", "row");
+      li.dataset.state = "ok";
+      li.append(el("span", "row-name", name), el("span", "row-detail", detail));
+      return li;
+    };
+    const when = (iso: string) =>
+      new Date(iso).toLocaleString("en-US", { timeZone: localZone(), weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    const out: HTMLElement[] = [];
+    if (this.reminders) {
+      const rows = [
+        ...this.reminders.list
+          .filter((r) => match(r.text))
+          .map((r) => plain(r.text, [when(r.due_at), r.repeat && `repeats ${r.repeat}`].filter(Boolean).join(" · "))),
+        ...this.reminders.notes.filter((n) => match(n.text)).map((n) => plain(n.text, n.kind)),
+      ];
+      out.push(section("Reminders & notes", rows, "None · ask Jarvis to remind you"));
+    }
     const local = l.local
       .filter((p) => match(p.name, p.description))
       .map((p) => row(localKey(p), p.name, p.description || "Jarvis project"));
-    const out = [section("Jarvis projects", local, "None yet · New project, or ask Jarvis")];
+    out.push(section("Jarvis projects", local, "None yet · New project, or ask Jarvis"));
     if (l.github) {
       const repos = l.github.repos.filter((r) => match(r.name, r.description, r.language));
       const repoRow = (r: Repo) =>

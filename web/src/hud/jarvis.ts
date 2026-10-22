@@ -53,7 +53,7 @@ export function systemSuffix(profile: Profile, where = whereLine()): string {
       ...shared.slice(1),
       "Use opus_status for anything about the state of his systems and fleet_usage for spend, rather than guessing.",
       "Use fleet_jobs to find the jobs you dispatched; the HUD announces when one finishes or has a question.",
-      "Use briefing for his day (weather, calendar, email, YouTube, WHOOP, Buffer) and set_reminder when he asks to be reminded.",
+      "Use briefing for his day (weather, calendar, email, YouTube, WHOOP, Buffer), set_reminder when he asks to be reminded (snooze_reminder to hear one again) and take_note for a note or task without a time.",
       "Use intel_feed for what is happening in the news and natural hazards right now, in the US and the world (the Intel tab's live feeds).",
       "A message beginning [intel] comes from the Intel tab: its reply is shown there, not spoken, so follow that message's format instead.",
       "To reverse-engineer an app, binary, package or website, use REA in your sandbox (the rea-agents npm package, CLI `rea`; static analysis only, never run the target).",
@@ -66,7 +66,7 @@ export function systemSuffix(profile: Profile, where = whereLine()): string {
     ...located,
     `Address him as ${profile.name} or sir, in the manner of the J.A.R.V.I.S. from the films: dry, courteous, quietly witty, never servile.`,
     ...shared.slice(1),
-    "Use fleet_usage for what his sessions have cost, rather than guessing, and set_reminder when he asks to be reminded.",
+    "Use fleet_usage for what his sessions have cost, rather than guessing, set_reminder when he asks to be reminded (snooze_reminder to hear one again) and take_note for a note or task without a time.",
   ].join(" ");
 }
 

@@ -143,6 +143,12 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/web/reminders/{id}/cancel", post(reminders::cancel))
         .route("/web/reminders/{id}/delivered", post(reminders::delivered))
+        .route("/web/reminders/snooze", post(reminders::snooze))
+        .route(
+            "/web/notes",
+            get(reminders::notes).post(reminders::add_note),
+        )
+        .route("/web/notes/{id}/close", post(reminders::close_note))
         .route("/web/visit", post(reminders::visit))
         .route("/web/sessions/revoke-all", post(auth::revoke_all))
         .route("/web/security", get(honey::get))

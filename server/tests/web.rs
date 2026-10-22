@@ -823,6 +823,93 @@ async fn reminders_and_visits_end_to_end() {
     let r = send(&h, bff(Method::GET, "/web/reminders", Some(&cookie), None)).await;
     assert!(r.json()["reminders"].as_array().unwrap().is_empty());
 
+    // Recurring: spoken, it moves on to the next time the HUD worked out.
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/reminders",
+            Some(&cookie),
+            Some(json!({"text": "vitamins", "at": at, "repeat": "weekdays"})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["repeat"], "weekdays");
+    assert_eq!(r.json()["wall"], at[11..16]);
+    let daily = r.json()["id"].as_i64().unwrap();
+    let path = format!("/web/reminders/{daily}/delivered");
+    let r = send(&h, bff(Method::POST, &path, Some(&cookie), Some(json!({})))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "needs next_at");
+    let next = (time::OffsetDateTime::now_utc() + time::Duration::days(1))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            &path,
+            Some(&cookie),
+            Some(json!({"next_at": next})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["closed"], false);
+    let r = send(&h, bff(Method::GET, "/web/reminders", Some(&cookie), None)).await;
+    assert_eq!(r.json()["reminders"][0]["id"], daily, "still pending");
+
+    // Snooze: a one-off copy of the one just spoken, ten minutes on.
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/reminders/snooze",
+            Some(&cookie),
+            Some(json!({})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["text"], "vitamins");
+    assert_eq!(r.json()["repeat"], Value::Null);
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/reminders/snooze",
+            Some(&cookie),
+            Some(json!({"minutes": 0})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+
+    // Notes and tasks.
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/notes",
+            Some(&cookie),
+            Some(json!({"text": "look into the XREAL firmware", "kind": "task"})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let note = r.json()["id"].as_i64().unwrap();
+    let r = send(&h, bff(Method::GET, "/web/notes", Some(&cookie), None)).await;
+    assert_eq!(r.json()["notes"][0]["kind"], "task");
+    let path = format!("/web/notes/{note}/close");
+    assert_eq!(
+        send(&h, bff(Method::POST, &path, Some(&cookie), None))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let r = send(&h, bff(Method::GET, "/web/notes", Some(&cookie), None)).await;
+    assert!(r.json()["notes"].as_array().unwrap().is_empty());
+
     let first = send(&h, bff(Method::POST, "/web/visit", Some(&cookie), None)).await;
     assert_eq!(first.json()["previous"], Value::Null);
     let second = send(&h, bff(Method::POST, "/web/visit", Some(&cookie), None)).await;
