@@ -176,6 +176,14 @@ pub fn app(state: AppState) -> Router {
             "/web/projects/local/{id}/remove",
             post(projects::remove_local),
         )
+        .route(
+            "/web/projects/local/{id}/session",
+            post(projects::set_session),
+        )
+        .route(
+            "/web/projects/github/{owner}/{repo}/tree",
+            get(projects::tree),
+        )
         .route_layer(from_fn_with_state(state.clone(), auth::require_session));
 
     let api = Router::new()

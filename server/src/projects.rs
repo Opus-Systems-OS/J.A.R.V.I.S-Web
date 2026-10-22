@@ -29,7 +29,10 @@ const API: &str = "https://api.github.com";
 const TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_PAGES: u32 = 5;
 const MAX_MODELS: usize = 50;
-const MAX_MODEL_BYTES: u64 = 40 * 1024 * 1024;
+/// The largest file relayed (a model, a doc, a source file).
+const MAX_FILE_BYTES: u64 = 40 * 1024 * 1024;
+/// Files listed per repo; a bigger tree is cut and says so.
+const MAX_TREE: usize = 5000;
 const MAX_PROJECTS: i64 = 200;
 const NAME_MAX: usize = 100;
 const DESCRIPTION_MAX: usize = 350;
@@ -49,9 +52,17 @@ pub struct Repo {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct ModelFile {
+pub struct TreeFile {
     pub path: String,
     pub size: u64,
+}
+
+/// A repo's files (blobs) on its default branch.
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+pub struct Tree {
+    pub files: Vec<TreeFile>,
+    /// More than `MAX_TREE` files, or GitHub cut the tree itself.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -60,11 +71,11 @@ pub struct Github {
     pub repos: Vec<Repo>,
 }
 
-/// Per profile: the repo list, and each repo's model files.
+/// Per profile: the repo list, and each repo's tree.
 #[derive(Default)]
 pub struct Cache {
     lists: Mutex<HashMap<String, (Instant, Github)>>,
-    trees: Mutex<HashMap<String, (Instant, Vec<ModelFile>)>>,
+    trees: Mutex<HashMap<String, (Instant, Tree)>>,
 }
 
 fn upstream(what: &str) -> Error {
@@ -221,30 +232,41 @@ fn is_model(path: &str) -> bool {
         .is_some_and(|(_, ext)| MODEL_EXTS.contains(&ext.to_ascii_lowercase().as_str()))
 }
 
-/// Model files in a recursive git tree, small enough to relay.
-pub fn models_in_tree(tree: &Value) -> Vec<ModelFile> {
-    tree["tree"]
+/// A recursive git tree's files, up to `MAX_TREE`.
+pub fn files_in_tree(tree: &Value) -> Tree {
+    let blobs: Vec<TreeFile> = tree["tree"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|e| e["type"].as_str() == Some("blob"))
         .filter_map(|e| {
-            let path = e["path"].as_str()?;
-            let size = e["size"].as_u64().unwrap_or(0);
-            (is_model(path) && size <= MAX_MODEL_BYTES).then(|| ModelFile {
-                path: path.to_owned(),
-                size,
+            Some(TreeFile {
+                path: e["path"].as_str()?.to_owned(),
+                size: e["size"].as_u64().unwrap_or(0),
             })
         })
+        .collect();
+    Tree {
+        truncated: blobs.len() > MAX_TREE || tree["truncated"].as_bool() == Some(true),
+        files: blobs.into_iter().take(MAX_TREE).collect(),
+    }
+}
+
+/// The 3D models in a tree, small enough to relay.
+pub fn models_in(tree: &Tree) -> Vec<TreeFile> {
+    tree.files
+        .iter()
+        .filter(|f| is_model(&f.path) && f.size <= MAX_FILE_BYTES)
         .take(MAX_MODELS)
+        .cloned()
         .collect()
 }
 
-async fn models_of(state: &AppState, p: &Profile, r: &Repo) -> Result<Vec<ModelFile>> {
+async fn tree_of(state: &AppState, p: &Profile, r: &Repo) -> Result<Tree> {
     let key = format!("{}:{}/{}", p.id, r.owner, r.name).to_lowercase();
-    if let Some((at, m)) = state.intel.projects.trees.lock().expect("trees").get(&key) {
+    if let Some((at, t)) = state.intel.projects.trees.lock().expect("trees").get(&key) {
         if at.elapsed() < TTL {
-            return Ok(m.clone());
+            return Ok(t.clone());
         }
     }
     let tree = get_json(
@@ -259,9 +281,9 @@ async fn models_of(state: &AppState, p: &Profile, r: &Repo) -> Result<Vec<ModelF
     )
     .await;
     // An empty repo has no tree yet.
-    let models = match tree {
-        Ok(t) => models_in_tree(&t),
-        Err(Error::NotFound) => Vec::new(),
+    let tree = match tree {
+        Ok(t) => files_in_tree(&t),
+        Err(Error::NotFound) => Tree::default(),
         Err(e) => return Err(e),
     };
     state
@@ -270,8 +292,8 @@ async fn models_of(state: &AppState, p: &Profile, r: &Repo) -> Result<Vec<ModelF
         .trees
         .lock()
         .expect("trees")
-        .insert(key, (Instant::now(), models.clone()));
-    Ok(models)
+        .insert(key, (Instant::now(), tree.clone()));
+    Ok(tree)
 }
 
 fn urlencoding(s: &str) -> String {
@@ -290,9 +312,19 @@ pub async fn models(
     State(state): State<AppState>,
     Extension(p): Extension<Profile>,
     Path((owner, name)): Path<(String, String)>,
-) -> Result<Json<Vec<ModelFile>>> {
+) -> Result<Json<Vec<TreeFile>>> {
     let r = repo(&state, &p, &owner, &name).await?;
-    Ok(Json(models_of(&state, &p, &r).await?))
+    Ok(Json(models_in(&tree_of(&state, &p, &r).await?)))
+}
+
+/// `GET /web/projects/github/{owner}/{repo}/tree`: every file, for the browser.
+pub async fn tree(
+    State(state): State<AppState>,
+    Extension(p): Extension<Profile>,
+    Path((owner, name)): Path<(String, String)>,
+) -> Result<Json<Tree>> {
+    let r = repo(&state, &p, &owner, &name).await?;
+    Ok(Json(tree_of(&state, &p, &r).await?))
 }
 
 #[derive(Deserialize)]
@@ -300,8 +332,8 @@ pub struct FileQuery {
     path: String,
 }
 
-/// `GET /web/projects/github/{owner}/{repo}/file?path=`: one model file,
-/// only one the tree listed, as an attachment that never renders.
+/// `GET /web/projects/github/{owner}/{repo}/file?path=`: one file the tree
+/// listed (a model, a doc, source), as an attachment that never renders.
 pub async fn file(
     State(state): State<AppState>,
     Extension(p): Extension<Profile>,
@@ -309,10 +341,11 @@ pub async fn file(
     Query(q): Query<FileQuery>,
 ) -> Result<Response> {
     let r = repo(&state, &p, &owner, &name).await?;
-    if !models_of(&state, &p, &r)
-        .await?
+    let listed = tree_of(&state, &p, &r).await?;
+    if !listed
+        .files
         .iter()
-        .any(|m| m.path == q.path)
+        .any(|f| f.path == q.path && f.size <= MAX_FILE_BYTES)
     {
         return Err(Error::NotFound);
     }
@@ -336,7 +369,7 @@ pub async fn file(
     let mut stream = res.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| upstream("read failed"))?;
-        if (body.len() + chunk.len()) as u64 > MAX_MODEL_BYTES {
+        if (body.len() + chunk.len()) as u64 > MAX_FILE_BYTES {
             return Err(upstream("too large"));
         }
         body.extend_from_slice(&chunk);
@@ -507,6 +540,34 @@ pub async fn create_local(
         .ok_or_else(|| Error::InvalidRequest(format!("at most {MAX_PROJECTS} projects")))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectSession {
+    pub session_id: String,
+}
+
+/// `POST /web/projects/local/{id}/session`: the conversation it continues in
+/// now (its first one ended, or it never had one).
+pub async fn set_session(
+    State(state): State<AppState>,
+    Extension(p): Extension<Profile>,
+    Path(id): Path<i64>,
+    body: std::result::Result<Json<ProjectSession>, JsonRejection>,
+) -> Result<Json<Value>> {
+    let Json(req) = body.map_err(|e| Error::InvalidRequest(e.body_text()))?;
+    if !session_ok(&req.session_id) {
+        return Err(Error::InvalidRequest(
+            "session_id is not a session id".into(),
+        ));
+    }
+    if !state.db.set_project_session(&p.id, id, &req.session_id)? {
+        return Err(Error::NotFound);
+    }
+    Ok(Json(
+        serde_json::json!({ "id": id, "session_id": req.session_id }),
+    ))
+}
+
 /// `POST /web/projects/local/{id}/remove`.
 pub async fn remove_local(
     State(state): State<AppState>,
@@ -541,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn model_files_come_from_the_tree() {
+    fn trees_keep_every_file_and_models_are_picked_out() {
         let tree = json!({"tree":[
           {"path":"assets/suit.glb","type":"blob","size":2048},
           {"path":"assets/Helmet.STL","type":"blob","size":10},
@@ -549,11 +610,16 @@ mod tests {
           {"path":"huge.gltf","type":"blob","size": 50u64 * 1024 * 1024},
           {"path":"README.md","type":"blob","size":10}
         ]});
-        let m = models_in_tree(&tree);
+        let t = files_in_tree(&tree);
+        assert_eq!(t.files.len(), 4, "folders aren't files");
+        assert!(!t.truncated);
+        let m = models_in(&t);
         assert_eq!(
             m.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
             ["assets/suit.glb", "assets/Helmet.STL"]
         );
+        let cut = files_in_tree(&json!({"tree": [], "truncated": true}));
+        assert!(cut.truncated);
     }
 
     #[test]

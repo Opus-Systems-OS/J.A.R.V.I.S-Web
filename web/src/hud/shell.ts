@@ -4,7 +4,7 @@
 // — and owns nothing else: no fleet state, no conversation state beyond
 // the session bookmark Jarvis keeps.
 
-import { get, lock, lockEverywhere, type Me, type Profile } from "../api";
+import { get, lock, lockEverywhere, web, type Me, type Profile } from "../api";
 import { html, setHtml, type Html } from "../html";
 import { CreditWatch, creditLine, dollars, fishDollars, level, type Credits } from "./credits";
 import { ago, FleetView } from "./fleet";
@@ -14,7 +14,7 @@ import { Jarvis, MODELS, type Phase } from "./jarvis";
 import { Listener, type Engine, type ListenerState } from "./listener";
 import { MicLease } from "./micLease";
 import { Speaker } from "./speaker";
-import { ProjectsView } from "./projects";
+import { findProject, listProjects, ProjectsView, type LocalProject } from "./projects";
 import { SystemsView } from "./systems";
 import { TerminalView, terminalTask } from "./terminal";
 import { compactOps, tabsFor } from "./tools";
@@ -185,7 +185,15 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   // Everyone sees Systems; only the owner lifts a ban.
   const systemsView = new SystemsView($("#view-systems"), full);
   // Each profile's own repos (its own token) and Jarvis projects.
-  const projectsView: ProjectsView = new ProjectsView($("#view-projects"), { sessionId: (): string | null => jarvis.session });
+  // Back into a Jarvis project's conversation; a new one is tied to it.
+  const continueProject = async (p: LocalProject): Promise<void> => {
+    openPanel("HUD");
+    await jarvis.continueProject(p, (id) => void web(`projects/local/${p.id}/session`, { session_id: id }).catch(() => undefined));
+  };
+  const projectsView: ProjectsView = new ProjectsView($("#view-projects"), {
+    sessionId: (): string | null => jarvis.session,
+    continueProject,
+  });
   const usageView = new UsageView($("#view-usage"), (c) => watch.observe(c), full);
   /** What a tab's written reply (an Intel brief, a Reverse report) may say aloud: its first line. */
   const speakLead = (line: string) => {
@@ -383,6 +391,19 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     openProject: async (name): Promise<boolean> => {
       openPanel("Projects");
       return projectsView.open(name);
+    },
+    continueProject: async (name): Promise<"continued" | "repo" | "none"> => {
+      const l = await listProjects();
+      const key = findProject(l, name);
+      const local = key?.startsWith("local:") ? l.local.find((p) => `local:${p.id}` === key) : undefined;
+      if (local) {
+        await continueProject(local);
+        return "continued";
+      }
+      if (!key) return "none";
+      openPanel("Projects");
+      await projectsView.open(name);
+      return "repo";
     },
     showRoute: (route, where) => {
       if (where === "apple_maps") {

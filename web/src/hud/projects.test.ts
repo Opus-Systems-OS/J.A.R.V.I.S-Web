@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { modelKind } from "./model3d";
-import { findProject, type Listing } from "./projects";
+import { findProject, folderView, type Listing } from "./projects";
+import { projectNote } from "./jarvis";
 
 const listing: Listing = {
   github: {
@@ -27,5 +28,24 @@ describe("projects", () => {
     expect(modelKind("helmet.stl")).toBe("stl");
     expect(modelKind("scene.gltf")).toBe("gltf");
     expect(modelKind("README.md")).toBeNull();
+  });
+});
+
+describe("repo browser and project context", () => {
+  it("shows one folder at a time", () => {
+    const files = ["README.md", "server/src/main.rs", "server/Cargo.toml", "web/src/a.ts", "web/b.ts"].map((path) => ({ path }));
+    const root = folderView(files, "");
+    expect(root.folders).toEqual(["server", "web"]);
+    expect(root.here.map((f) => f.path)).toEqual(["README.md"]);
+    const server = folderView(files, "server");
+    expect(server.folders).toEqual(["src"]);
+    expect(server.here.map((f) => f.path)).toEqual(["server/Cargo.toml"]);
+  });
+
+  it("tells Jarvis which project and where its files go", () => {
+    expect(projectNote({ name: "Mark II", description: "flight tests" })).toBe(
+      '[project] Working on "Mark II": flight tests. Save its files to /mnt/session/outputs/.',
+    );
+    expect(projectNote({ name: "X", description: " " })).toBe('[project] Working on "X". Save its files to /mnt/session/outputs/.');
   });
 });

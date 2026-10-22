@@ -164,6 +164,20 @@ const TOOLS: ToolDef[] = [
   },
   {
     type: "custom",
+    name: "project_continue",
+    description:
+      "Work on one of his Jarvis projects: switches this HUD to that project's own conversation (or starts one for it), " +
+      "so its files and history are together. Use it when he says 'work on …', 'continue …' or 'back to …'. Your reply " +
+      "comes after the switch, in that conversation.",
+    input_schema: {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
     name: "project_open",
     description: "Open the Projects tab on one of his projects, by name, showing its details and 3D models.",
     input_schema: {
@@ -335,6 +349,7 @@ export async function runTool(
     openPanel(tab: string): void;
     showRoute(r: Route, where: "apple_maps" | "here"): void;
     openProject(name: string): Promise<boolean>;
+    continueProject(name: string): Promise<"continued" | "repo" | "none">;
     /** The conversation the tool was called in. */
     session: string | null;
     jobs(): Job[];
@@ -435,6 +450,15 @@ export async function runTool(
         });
         await ui.openProject(made);
         return { content: JSON.stringify({ created: made, kind, shown: "in the Projects tab" }) };
+      }
+      case "project_continue": {
+        const name = typeof args.name === "string" ? args.name.trim() : "";
+        if (!name) return { content: "need name", is_error: true };
+        const r = await ui.continueProject(name);
+        if (r === "none") return { content: `no project called ${name}: call projects_list`, is_error: true };
+        if (r === "repo")
+          return { content: `${name} is a GitHub repository: opened it in the Projects tab; working inside repos isn't supported yet` };
+        return { content: `the HUD has switched to ${name}'s own conversation; nothing more is needed here (he continues there)` };
       }
       case "project_open": {
         const name = typeof args.name === "string" ? args.name.trim() : "";

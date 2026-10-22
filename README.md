@@ -92,11 +92,14 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   (Mr. Walker) and `GITHUB_POWERS_TOKEN_FILE` (Mr. Powers) hold classic
   tokens (`repo`, `read:org`), read only by `jarvis-web` and sent only to
   `api.github.com`. A profile sees its own account's repos and the
-  Opus-Systems-OS org's, and can create a repo in either. A repo's 3D models
-  (`.glb .gltf .stl`, from its tree, up to 40 MB) are relayed one at a time
+  Opus-Systems-OS org's, and can create a repo in either. A repo's files (its
+  tree, up to 5,000 listed; any one up to 40 MB) are relayed one at a time
   as an attachment under `Content-Security-Policy: sandbox`, never rendered
-  by the browser as a page. A missing or empty token file just means "no
-  GitHub yet". Jarvis projects (ones that live here) are kept per profile.
+  by the browser as a page: the tab reads the bytes and shows docs, code and
+  3D models itself, as text nodes. A missing or empty token file just means
+  "no GitHub yet". Jarvis projects (ones that live here) are kept per
+  profile, each tied to its own conversation: Continue reopens it (or starts
+  one and ties it), and a `[project]` line tells Jarvis which project he's in.
 - **Directions come through here too.** Jarvis's `directions` tool asks
   `/web/route`, which finds the destination with OpenStreetMap's Nominatim
   (one search a second at most, as its policy asks) and the driving route
