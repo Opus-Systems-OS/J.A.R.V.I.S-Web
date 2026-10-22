@@ -63,10 +63,17 @@ export function systemSuffix(profile: Profile, where = whereLine()): string {
 export const MODELS: { id: string; label: string }[] = [
   { id: "", label: "Opus 5 · agent default" },
   { id: "claude-opus-5-5", label: "Opus 5.5" },
-  { id: "claude-sonnet-5", label: "Sonnet 5" },
-  { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+  { id: "claude-sonnet-5-5", label: "Sonnet 5.5" },
+  { id: "claude-haiku-5-5", label: "Haiku 5.5" },
   { id: "claude-fable-5-1", label: "Fable 5.1" },
 ];
+
+/** Picks no longer offered → their successor, so nobody is left on a hidden option. */
+const RETIRED: Record<string, string> = {
+  "claude-sonnet-5": "claude-sonnet-5-5",
+  "claude-haiku-4-5-20251001": "claude-haiku-5-5",
+};
+export const currentModel = (id: string) => RETIRED[id] ?? id;
 
 export type Phase = "idle" | "thinking" | "error";
 
@@ -121,7 +128,14 @@ export class Jarvis {
     private readonly profile: Profile,
   ) {
     this.sessionId = load(storageKey(profile, "session"));
-    this.modelId = load(storageKey(profile, "model")) ?? "";
+    const stored = load(storageKey(profile, "model")) ?? "";
+    this.modelId = currentModel(stored);
+    if (this.modelId !== stored) {
+      // The old session is on the retired model: the next message starts one on its successor.
+      save(storageKey(profile, "model"), this.modelId);
+      save(storageKey(profile, "session"), null);
+      this.sessionId = null;
+    }
   }
 
   get model(): string {
