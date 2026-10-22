@@ -78,6 +78,12 @@ export const FOLLOW_UP_MS = 10_000;
  * speech without a wake word (seen live 2026-09-24).
  */
 export const ASSEMBLE_MS = 1_300;
+/**
+ * The longest a request stays open. In a room where talk never pauses
+ * (seen live 2026-10-22, Mr. Powers), the quiet that closes a request never
+ * comes; past this, it goes at the next phrase boundary instead.
+ */
+export const ASSEMBLE_MAX_MS = 15_000;
 /** The same request twice within this window is sent once. */
 const REPEAT_MS = 4_000;
 /** Consecutive failed starts (nothing heard) before giving up. */
@@ -122,6 +128,7 @@ export class Listener {
   private failures = 0;
   /** A request being assembled: text so far, and when to send it. */
   private pending: string | null = null;
+  private pendingSince = 0;
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private lastSent = { text: "", at: 0 };
   /** Cloud ears hear speech right now (the text arrives after it ends). */
@@ -358,6 +365,7 @@ export class Listener {
     if (this.pending !== null) {
       // The next piece of a request already under way: no wake word needed.
       this.pending = `${this.pending} ${text.trim()}`;
+      if (Date.now() - this.pendingSince >= ASSEMBLE_MAX_MS) return this.flush();
       this.ev.onHearing(this.pending);
       this.scheduleFlush();
       return;
@@ -385,6 +393,7 @@ export class Listener {
     this.setState("awake");
     // Don't send yet: the sentence may continue after a pause.
     this.pending = rest;
+    this.pendingSince = Date.now();
     this.ev.onHearing(rest);
     this.scheduleFlush();
   }
