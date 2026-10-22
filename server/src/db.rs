@@ -90,6 +90,15 @@ CREATE TABLE IF NOT EXISTS watch_alerts (
   at       INTEGER NOT NULL,
   PRIMARY KEY (profile, item)
 );
+-- Notes and tasks captured without a time (`reminders.rs`).
+CREATE TABLE IF NOT EXISTS notes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile     TEXT NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN ('note', 'task')),
+  text        TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  closed_at   INTEGER             -- done, or no longer wanted
+);
 -- The bait passphrase in the fake `.env`: made once, kept across restarts.
 CREATE TABLE IF NOT EXISTS honey (
   id      INTEGER PRIMARY KEY CHECK (id = 1),
@@ -105,6 +114,11 @@ const ADDED: &[(&str, &str, &str)] = &[
     // 0 = not seen since unlock; `created_at` stands in.
     ("web_sessions", "last_seen_at", "INTEGER NOT NULL DEFAULT 0"),
     ("reminders", "profile", "TEXT NOT NULL DEFAULT 'walker'"),
+    // A recurring reminder: its rule (`daily`, `weekdays`, `weekly:1,3`,
+    // `every:3`) and wall time (`07:00`). Its `due_at` moves on when spoken.
+    ("reminders", "recur", "TEXT"),
+    ("reminders", "wall", "TEXT"),
+    ("reminders", "last_spoken_at", "INTEGER"),
 ];
 
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
@@ -131,6 +145,17 @@ pub struct Reminder {
     pub id: i64,
     pub text: String,
     pub due_at: i64,
+    pub created_at: i64,
+    pub recur: Option<String>,
+    pub wall: Option<String>,
+}
+
+/// A note or task still open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Note {
+    pub id: i64,
+    pub kind: String,
+    pub text: String,
     pub created_at: i64,
 }
 
@@ -442,7 +467,14 @@ impl Db {
 
     // ---- reminders -------------------------------------------------------------
 
-    pub fn add_reminder(&self, profile: &str, text: &str, due_at: i64) -> Result<i64> {
+    /// `repeat` is a recurring reminder's rule and wall time.
+    pub fn add_reminder(
+        &self,
+        profile: &str,
+        text: &str,
+        due_at: i64,
+        repeat: Option<(&str, &str)>,
+    ) -> Result<i64> {
         let now = now();
         self.with(|c| {
             // Spoken or cancelled more than 30 days ago: gone.
@@ -451,8 +483,16 @@ impl Db {
                 [now - 30 * 86_400],
             )?;
             c.execute(
-                "INSERT INTO reminders (text, due_at, created_at, profile) VALUES (?1, ?2, ?3, ?4)",
-                params![text, due_at, now, profile],
+                "INSERT INTO reminders (text, due_at, created_at, profile, recur, wall)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    text,
+                    due_at,
+                    now,
+                    profile,
+                    repeat.map(|r| r.0),
+                    repeat.map(|r| r.1)
+                ],
             )?;
             Ok(c.last_insert_rowid())
         })
@@ -462,7 +502,7 @@ impl Db {
     pub fn pending_reminders(&self, profile: &str) -> Result<Vec<Reminder>> {
         self.with(|c| {
             c.prepare(
-                "SELECT id, text, due_at, created_at FROM reminders
+                "SELECT id, text, due_at, created_at, recur, wall FROM reminders
                  WHERE profile = ?1 AND delivered_at IS NULL AND cancelled_at IS NULL
                  ORDER BY due_at, id",
             )?
@@ -472,6 +512,8 @@ impl Db {
                     text: r.get(1)?,
                     due_at: r.get(2)?,
                     created_at: r.get(3)?,
+                    recur: r.get(4)?,
+                    wall: r.get(5)?,
                 })
             })?
             .collect()
@@ -481,17 +523,111 @@ impl Db {
     /// Mark one of `profile`'s pending reminders spoken (`delivered`) or
     /// cancelled. `false` when they have no such pending reminder.
     pub fn close_reminder(&self, profile: &str, id: i64, delivered: bool) -> Result<bool> {
-        let col = if delivered {
-            "delivered_at"
+        let set = if delivered {
+            "delivered_at = ?2, last_spoken_at = ?2"
         } else {
-            "cancelled_at"
+            "cancelled_at = ?2"
         };
         self.with(|c| {
             c.execute(
                 &format!(
-                    "UPDATE reminders SET {col} = ?2
+                    "UPDATE reminders SET {set}
                      WHERE id = ?1 AND profile = ?3 AND delivered_at IS NULL AND cancelled_at IS NULL"
                 ),
+                params![id, now(), profile],
+            )
+            .map(|n| n == 1)
+        })
+    }
+
+    /// A pending recurring reminder was spoken: move it on to `next_due`.
+    /// `false` when `profile` has no such reminder.
+    pub fn advance_reminder(&self, profile: &str, id: i64, next_due: i64) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE reminders SET due_at = ?2, last_spoken_at = ?3
+                 WHERE id = ?1 AND profile = ?4 AND recur IS NOT NULL
+                   AND delivered_at IS NULL AND cancelled_at IS NULL",
+                params![id, next_due, now(), profile],
+            )
+            .map(|n| n == 1)
+        })
+    }
+
+    /// Whether `profile`'s reminder `id` recurs; `None` when there is none.
+    pub fn reminder_recurs(&self, profile: &str, id: i64) -> Result<Option<bool>> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT recur IS NOT NULL FROM reminders WHERE id = ?1 AND profile = ?2",
+                params![id, profile],
+                |r| r.get(0),
+            )
+            .optional()
+        })
+    }
+
+    /// The text to snooze: reminder `id`, or else the one spoken last.
+    pub fn snooze_source(&self, profile: &str, id: Option<i64>) -> Result<Option<String>> {
+        self.with(|c| {
+            match id {
+                Some(id) => c.query_row(
+                    "SELECT text FROM reminders WHERE id = ?1 AND profile = ?2",
+                    params![id, profile],
+                    |r| r.get(0),
+                ),
+                None => c.query_row(
+                    "SELECT text FROM reminders WHERE profile = ?1 AND last_spoken_at IS NOT NULL
+                     ORDER BY last_spoken_at DESC, id DESC LIMIT 1",
+                    [profile],
+                    |r| r.get(0),
+                ),
+            }
+            .optional()
+        })
+    }
+
+    // ---- notes -----------------------------------------------------------------
+
+    pub fn add_note(&self, profile: &str, kind: &str, text: &str) -> Result<i64> {
+        let now = now();
+        self.with(|c| {
+            // Closed more than 30 days ago: gone.
+            c.execute(
+                "DELETE FROM notes WHERE closed_at < ?1",
+                [now - 30 * 86_400],
+            )?;
+            c.execute(
+                "INSERT INTO notes (profile, kind, text, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![profile, kind, text, now],
+            )?;
+            Ok(c.last_insert_rowid())
+        })
+    }
+
+    /// `profile`'s open notes and tasks, oldest first.
+    pub fn open_notes(&self, profile: &str) -> Result<Vec<Note>> {
+        self.with(|c| {
+            c.prepare(
+                "SELECT id, kind, text, created_at FROM notes
+                 WHERE profile = ?1 AND closed_at IS NULL ORDER BY id",
+            )?
+            .query_map([profile], |r| {
+                Ok(Note {
+                    id: r.get(0)?,
+                    kind: r.get(1)?,
+                    text: r.get(2)?,
+                    created_at: r.get(3)?,
+                })
+            })?
+            .collect()
+        })
+    }
+
+    /// Done or deleted. `false` when `profile` has no such open note.
+    pub fn close_note(&self, profile: &str, id: i64) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE notes SET closed_at = ?2 WHERE id = ?1 AND profile = ?3 AND closed_at IS NULL",
                 params![id, now(), profile],
             )
             .map(|n| n == 1)
@@ -787,9 +923,11 @@ mod tests {
     fn reminders_are_pending_until_spoken_or_cancelled() {
         let db = Db::in_memory().unwrap();
         let later = db
-            .add_reminder("walker", "call Josh", now() + 3600)
+            .add_reminder("walker", "call Josh", now() + 3600, None)
             .unwrap();
-        let sooner = db.add_reminder("walker", "stand up", now() + 60).unwrap();
+        let sooner = db
+            .add_reminder("walker", "stand up", now() + 60, None)
+            .unwrap();
         let p = db.pending_reminders("walker").unwrap();
         assert_eq!(
             p.iter().map(|r| r.id).collect::<Vec<_>>(),
@@ -808,8 +946,8 @@ mod tests {
     #[test]
     fn reminders_belong_to_their_profile() {
         let db = Db::in_memory().unwrap();
-        let mine = db.add_reminder("walker", "mine", now() + 60).unwrap();
-        let his = db.add_reminder("powers", "his", now() + 60).unwrap();
+        let mine = db.add_reminder("walker", "mine", now() + 60, None).unwrap();
+        let his = db.add_reminder("powers", "his", now() + 60, None).unwrap();
         let texts = |p: &str| {
             db.pending_reminders(p)
                 .unwrap()
@@ -825,6 +963,64 @@ mod tests {
         );
         assert!(db.close_reminder("powers", his, true).unwrap());
         assert_eq!(texts("walker"), ["mine"]);
+    }
+
+    #[test]
+    fn a_recurring_reminder_moves_on_and_can_be_snoozed() {
+        let db = Db::in_memory().unwrap();
+        let once = db.add_reminder("walker", "once", now() + 60, None).unwrap();
+        let daily = db
+            .add_reminder("walker", "vitamins", now() + 60, Some(("daily", "08:00")))
+            .unwrap();
+        assert_eq!(db.reminder_recurs("walker", daily).unwrap(), Some(true));
+        assert_eq!(db.reminder_recurs("walker", once).unwrap(), Some(false));
+        assert_eq!(db.reminder_recurs("powers", daily).unwrap(), None);
+        let next = now() + 86_400;
+        assert!(
+            !db.advance_reminder("walker", once, next).unwrap(),
+            "one-offs close"
+        );
+        assert!(db.advance_reminder("walker", daily, next).unwrap());
+        let p = db.pending_reminders("walker").unwrap();
+        let d = p.iter().find(|r| r.id == daily).unwrap();
+        assert_eq!(
+            (d.due_at, d.recur.as_deref(), d.wall.as_deref()),
+            (next, Some("daily"), Some("08:00"))
+        );
+        // Snooze takes the last one spoken, or the one named.
+        assert_eq!(
+            db.snooze_source("walker", None).unwrap().as_deref(),
+            Some("vitamins")
+        );
+        assert_eq!(
+            db.snooze_source("walker", Some(once)).unwrap().as_deref(),
+            Some("once")
+        );
+        assert_eq!(db.snooze_source("powers", None).unwrap(), None);
+        assert_eq!(db.snooze_source("powers", Some(once)).unwrap(), None);
+    }
+
+    #[test]
+    fn notes_are_open_until_closed_and_per_profile() {
+        let db = Db::in_memory().unwrap();
+        let n = db.add_note("walker", "note", "XREAL firmware").unwrap();
+        db.add_note("powers", "task", "his").unwrap();
+        let open = db.open_notes("walker").unwrap();
+        assert_eq!(
+            (open.len(), open[0].kind.as_str(), open[0].text.as_str()),
+            (1, "note", "XREAL firmware")
+        );
+        assert!(
+            !db.close_note("powers", n).unwrap(),
+            "nobody closes someone else's"
+        );
+        assert!(db.close_note("walker", n).unwrap());
+        assert!(!db.close_note("walker", n).unwrap(), "already closed");
+        assert!(db.open_notes("walker").unwrap().is_empty());
+        assert!(
+            db.add_note("walker", "memo", "x").is_err(),
+            "kind is checked"
+        );
     }
 
     #[test]

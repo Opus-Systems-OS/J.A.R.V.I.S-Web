@@ -33,6 +33,9 @@ const MAX_MODELS: usize = 50;
 const MAX_FILE_BYTES: u64 = 40 * 1024 * 1024;
 /// Files listed per repo; a bigger tree is cut and says so.
 const MAX_TREE: usize = 5000;
+/// The longest path, and the largest file Jarvis writes (text).
+const MAX_PATH: usize = 1024;
+const MAX_WRITE_BYTES: usize = 1024 * 1024;
 const MAX_PROJECTS: i64 = 200;
 const NAME_MAX: usize = 100;
 const DESCRIPTION_MAX: usize = 350;
@@ -395,6 +398,244 @@ pub async fn file(
     Ok(res)
 }
 
+/// A path inside a repo: relative, no empty, `.`, `..` or `.git` segments.
+pub fn path_ok(path: &str) -> bool {
+    (1..=MAX_PATH).contains(&path.len())
+        && !path.chars().any(char::is_control)
+        && path
+            .split('/')
+            .all(|s| !s.is_empty() && s != "." && s != ".." && !s.eq_ignore_ascii_case(".git"))
+}
+
+/// A GitHub write; its refusals are said plainly (they are his to fix).
+async fn send_json(
+    state: &AppState,
+    method: reqwest::Method,
+    path: &str,
+    token: &str,
+    body: &Value,
+) -> Result<Value> {
+    let res = request(state, method, &format!("{API}{path}"), token)
+        .json(body)
+        .send()
+        .await
+        .map_err(|_| upstream("unreachable"))?;
+    let status = res.status().as_u16();
+    let v: Value = res.json().await.unwrap_or(Value::Null);
+    let why = v["message"].as_str().unwrap_or("refused");
+    match status {
+        200 | 201 => Ok(v),
+        401 => Err(upstream("the token was refused (expired or revoked?)")),
+        403 | 404 => Err(Error::InvalidRequest(format!(
+            "GitHub refused ({why}): the token needs the repo scope and write access to this repo"
+        ))),
+        409 | 422 => Err(Error::InvalidRequest(format!(
+            "GitHub refused ({why}); the branch may have moved meanwhile, try again"
+        ))),
+        s => Err(upstream(&format!("HTTP {s}: {why}"))),
+    }
+}
+
+/// A branch in a refs URL: its `/`s stay, each part encoded.
+fn ref_path(r: &Repo) -> String {
+    r.default_branch
+        .split('/')
+        .map(urlencoding)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// The branch head now: its commit and that commit's tree.
+async fn head(state: &AppState, token: &str, r: &Repo) -> Result<(String, String)> {
+    let base = format!("/repos/{}/{}", r.owner, r.name);
+    let branch = ref_path(r);
+    let commit = get_json(state, &format!("{base}/git/ref/heads/{branch}"), token).await?["object"]
+        ["sha"]
+        .as_str()
+        .ok_or_else(|| upstream("no head"))?
+        .to_owned();
+    let tree = get_json(state, &format!("{base}/git/commits/{commit}"), token).await?["tree"]
+        ["sha"]
+        .as_str()
+        .ok_or_else(|| upstream("no tree"))?
+        .to_owned();
+    Ok((commit, tree))
+}
+
+/// One commit on the default branch changing `entries` (git tree entries);
+/// a branch that moved meanwhile is refused, not overwritten.
+async fn commit(
+    state: &AppState,
+    p: &Profile,
+    r: &Repo,
+    parent: (String, String),
+    message: &str,
+    entries: Vec<Value>,
+) -> Result<String> {
+    let token = token(p)?;
+    let base = format!("/repos/{}/{}", r.owner, r.name);
+    let tree = send_json(
+        state,
+        reqwest::Method::POST,
+        &format!("{base}/git/trees"),
+        token,
+        &serde_json::json!({ "base_tree": parent.1, "tree": entries }),
+    )
+    .await?;
+    let made = send_json(
+        state,
+        reqwest::Method::POST,
+        &format!("{base}/git/commits"),
+        token,
+        &serde_json::json!({ "message": message, "tree": tree["sha"], "parents": [parent.0] }),
+    )
+    .await?;
+    let sha = made["sha"].as_str().ok_or_else(|| upstream("no commit"))?;
+    send_json(
+        state,
+        reqwest::Method::PATCH,
+        &format!("{base}/git/refs/heads/{}", ref_path(r)),
+        token,
+        &serde_json::json!({ "sha": sha, "force": false }),
+    )
+    .await?;
+    let key = format!("{}:{}/{}", p.id, r.owner, r.name).to_lowercase();
+    state
+        .intel
+        .projects
+        .trees
+        .lock()
+        .expect("trees")
+        .remove(&key);
+    tracing::info!(owner = %r.owner, repo = %r.name, commit = %sha, "repo changed from the HUD");
+    Ok(sha.to_owned())
+}
+
+fn message(m: &Option<String>, default: String) -> Result<String> {
+    let m = m.as_deref().map(str::trim).filter(|m| !m.is_empty());
+    match m {
+        Some(m) if m.chars().count() > DESCRIPTION_MAX => Err(Error::InvalidRequest(format!(
+            "message: at most {DESCRIPTION_MAX} characters"
+        ))),
+        Some(m) => Ok(m.to_owned()),
+        None => Ok(default),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WriteFile {
+    pub path: String,
+    /// The whole file, as text.
+    pub content: String,
+    pub message: Option<String>,
+}
+
+/// `POST /web/projects/github/{owner}/{repo}/write`: create or replace one
+/// text file, as one commit on the default branch.
+pub async fn write_file(
+    State(state): State<AppState>,
+    Extension(p): Extension<Profile>,
+    Path((owner, name)): Path<(String, String)>,
+    body: std::result::Result<Json<WriteFile>, JsonRejection>,
+) -> Result<Json<Value>> {
+    let Json(req) = body.map_err(|e| Error::InvalidRequest(e.body_text()))?;
+    if !path_ok(&req.path) {
+        return Err(Error::InvalidRequest("path: a file inside the repo".into()));
+    }
+    if req.content.len() > MAX_WRITE_BYTES {
+        return Err(Error::InvalidRequest(format!(
+            "content: at most {} KB",
+            MAX_WRITE_BYTES / 1024
+        )));
+    }
+    let message = message(&req.message, format!("Update {} (from Jarvis)", req.path))?;
+    let r = repo(&state, &p, &owner, &name).await?;
+    let parent = head(&state, token(&p)?, &r).await?;
+    let entry = serde_json::json!({
+        "path": req.path, "mode": "100644", "type": "blob", "content": req.content,
+    });
+    let sha = commit(&state, &p, &r, parent, &message, vec![entry]).await?;
+    Ok(Json(serde_json::json!({ "path": req.path, "commit": sha })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoveFile {
+    pub from: String,
+    pub to: String,
+    pub message: Option<String>,
+}
+
+/// `POST /web/projects/github/{owner}/{repo}/move`: rename a file within the
+/// repo, as one commit; never over a file that is already there.
+pub async fn move_file(
+    State(state): State<AppState>,
+    Extension(p): Extension<Profile>,
+    Path((owner, name)): Path<(String, String)>,
+    body: std::result::Result<Json<MoveFile>, JsonRejection>,
+) -> Result<Json<Value>> {
+    let Json(req) = body.map_err(|e| Error::InvalidRequest(e.body_text()))?;
+    if !path_ok(&req.from) || !path_ok(&req.to) || req.from == req.to {
+        return Err(Error::InvalidRequest(
+            "from and to: two different files inside the repo".into(),
+        ));
+    }
+    let message = message(
+        &req.message,
+        format!("Move {} to {} (from Jarvis)", req.from, req.to),
+    )?;
+    let r = repo(&state, &p, &owner, &name).await?;
+    let token = token(&p)?;
+    let parent = head(&state, token, &r).await?;
+    let tree = get_json(
+        &state,
+        &format!(
+            "/repos/{}/{}/git/trees/{}?recursive=1",
+            r.owner, r.name, parent.1
+        ),
+        token,
+    )
+    .await?;
+    let entry = |path: &str| {
+        tree["tree"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|e| e["path"].as_str() == Some(path))
+            .cloned()
+    };
+    let src = entry(&req.from)
+        .filter(|e| e["type"].as_str() == Some("blob"))
+        .ok_or(Error::NotFound)?;
+    if tree["truncated"].as_bool() == Some(true) {
+        return Err(Error::InvalidRequest(
+            "this repo is too big to check a move safely".into(),
+        ));
+    }
+    // The destination taken, or a file where one of its folders would be.
+    if entry(&req.to).is_some()
+        || tree["tree"].as_array().into_iter().flatten().any(|e| {
+            e["path"].as_str().is_some_and(|x| {
+                req.to.starts_with(&format!("{x}/")) && e["type"].as_str() == Some("blob")
+            })
+        })
+    {
+        return Err(Error::InvalidRequest(format!(
+            "{} is already there",
+            req.to
+        )));
+    }
+    let entries = vec![
+        serde_json::json!({ "path": req.to, "mode": src["mode"], "type": "blob", "sha": src["sha"] }),
+        serde_json::json!({ "path": req.from, "mode": src["mode"], "type": "blob", "sha": Value::Null }),
+    ];
+    let sha = commit(&state, &p, &r, parent, &message, entries).await?;
+    Ok(Json(
+        serde_json::json!({ "from": req.from, "to": req.to, "commit": sha }),
+    ))
+}
+
 /// GitHub's repository names: letters, digits, `.`, `-`, `_`, not `.` or `..`.
 pub fn repo_name_ok(name: &str) -> bool {
     (1..=NAME_MAX).contains(&name.len())
@@ -632,6 +873,25 @@ mod tests {
         assert!(!repo_name_ok(&"a".repeat(101)));
         assert!(session_ok("sesn_011CVabc"));
         assert!(!session_ok("../x"));
+    }
+
+    #[test]
+    fn repo_paths_stay_inside_the_repo() {
+        assert!(path_ok("docs/spec.md"));
+        assert!(path_ok(".github/workflows/ci.yml"));
+        for bad in [
+            "",
+            "/etc/x",
+            "docs/",
+            "a//b",
+            "../x",
+            "a/./b",
+            ".git/config",
+            "a\nb",
+        ] {
+            assert!(!path_ok(bad), "{bad}");
+        }
+        assert!(!path_ok(&"a".repeat(MAX_PATH + 1)));
     }
 
     #[test]

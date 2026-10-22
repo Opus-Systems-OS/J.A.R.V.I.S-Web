@@ -100,6 +100,11 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
   "no GitHub yet". Jarvis projects (ones that live here) are kept per
   profile, each tied to its own conversation: Continue reopens it (or starts
   one and ties it), and a `[project]` line tells Jarvis which project he's in.
+  Jarvis can list and read any project's files, and write or move a text
+  file within a repo (`/web/projects/github/{owner}/{repo}/write`, `/move`,
+  one commit each on the default branch, paths kept inside the repo), but
+  only after he taps Approve on the change shown in full in the transcript.
+  "Files by project" in the tab shows each project's files.
 - **Directions come through here too.** Jarvis's `directions` tool asks
   `/web/route`, which finds the destination with OpenStreetMap's Nominatim
   (one search a second at most, as its policy asks) and the driving route

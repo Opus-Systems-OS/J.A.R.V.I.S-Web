@@ -3,6 +3,8 @@
 // token, `projects.rs`). Selecting one shows what it is and its 3D models; a
 // model opens in the spinning viewer (`model3d.ts`). New project asks the
 // question Jarvis asks too: a GitHub repository, or a project on here?
+// Above them, his pending reminders and open notes (`reminders.ts`), to read;
+// Jarvis cancels and completes them.
 //
 // Text from GitHub and the API goes in with textContent; the skeleton is the
 // only markup, and it goes through `html`.
@@ -12,6 +14,8 @@ import { html, setHtml } from "../html";
 import { link } from "./brief";
 import { ago } from "./fleet";
 import { kindOf, renderFile, type FileKind } from "./fileview";
+import { localZone } from "./location";
+import { notes, pending, type Note, type Reminder } from "./reminders";
 import type { OutputFile } from "./transcript";
 
 export interface Repo {
@@ -58,19 +62,64 @@ export function findProject(l: Listing, name: string): Key | null {
 
 export const listProjects = () => webGet<Listing>("projects");
 
+/** A project found by name, from a listing. */
+export type Found = { kind: "repo"; name: string; repo: Repo } | { kind: "local"; name: string; project: LocalProject };
+
+export function found(l: Listing, name: string): Found | null {
+  const key = findProject(l, name);
+  const project = l.local.find((p) => localKey(p) === key);
+  if (project) return { kind: "local", name: project.name, project };
+  const repo = l.github?.repos.find((r) => repoKey(r) === key);
+  return repo ? { kind: "repo", name: `${repo.owner}/${repo.name}`, repo } : null;
+}
+
+/** A file a project shows: where to read it and where to download it. */
+export interface ProjectFile {
+  path: string;
+  size: number;
+  url: string;
+  load(): Promise<ArrayBuffer>;
+}
+
+const repoBase = (r: Repo) => `projects/github/${encodeURIComponent(r.owner)}/${encodeURIComponent(r.name)}`;
+
+const repoFile = (r: Repo, path: string, size: number): ProjectFile => {
+  const url = `/web/${repoBase(r)}/file?path=${encodeURIComponent(path)}`;
+  return { path, size, url, load: () => fetchBytes(url) };
+};
+
+/** A project's files: a repo's tree on its default branch, or what a Jarvis
+ * project's conversation saved to its outputs (none before it has one). */
+export async function projectFiles(f: Found): Promise<{ files: ProjectFile[]; truncated: boolean }> {
+  if (f.kind === "repo") {
+    const t = await webGet<{ files: { path: string; size: number }[]; truncated: boolean }>(`${repoBase(f.repo)}/tree`);
+    return { files: t.files.map((x) => repoFile(f.repo, x.path, x.size)), truncated: t.truncated };
+  }
+  const session = f.project.session_id;
+  if (!session) return { files: [], truncated: false };
+  const out = (await get<{ data?: OutputFile[] }>(`sessions/${encodeURIComponent(session)}/files`)).data ?? [];
+  const files = out
+    .filter((o) => o.downloadable)
+    .map((o) => {
+      const url = `/bff/v1/files/${encodeURIComponent(o.id)}/content?session=${encodeURIComponent(session)}`;
+      return { path: o.filename, size: o.size_bytes ?? 0, url, load: () => fetchBytes(url) };
+    });
+  return { files, truncated: false };
+}
+
+/** One text file of a repo, created or replaced as one commit. */
+export const writeRepoFile = (r: Repo, path: string, content: string, message?: string) =>
+  web<{ path: string; commit: string }>(`${repoBase(r)}/write`, { path, content, message });
+
+/** A file renamed within a repo, as one commit; never over another file. */
+export const moveRepoFile = (r: Repo, from: string, to: string, message?: string) =>
+  web<{ from: string; to: string; commit: string }>(`${repoBase(r)}/move`, { from, to, message });
+
 export interface ProjectsHost {
   /** The Jarvis conversation now: a new Jarvis project belongs to it. */
   sessionId(): string | null;
   /** Back into a Jarvis project's conversation (the HUD tab). */
   continueProject(p: LocalProject): Promise<void>;
-}
-
-/** A file a project shows: where to read it and where to download it. */
-interface ProjectFile {
-  path: string;
-  size: number;
-  url: string;
-  load(): Promise<ArrayBuffer>;
 }
 
 const kb = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
@@ -99,6 +148,7 @@ const el = <T extends HTMLElement>(tag: string, cls?: string, text?: string): T 
 
 export class ProjectsView {
   private listing: Listing | null = null;
+  private reminders: { list: Reminder[]; notes: Note[] } | null = null;
   private selected: Key | null = null;
   private filter = "";
   private closeViewer: (() => void) | null = null;
@@ -114,6 +164,7 @@ export class ProjectsView {
         <section class="panel projects-list">
           <header class="panel-head">
             <span class="panel-title">Projects</span>
+            <button class="btn-ghost btn-small" id="proj-files" type="button">Files by project</button>
             <button class="btn-ghost btn-small" id="proj-new" type="button">New project</button>
           </header>
           <input class="projects-filter" id="proj-filter" autocomplete="off" spellcheck="false" placeholder="Filter" aria-label="Filter projects" />
@@ -134,6 +185,7 @@ export class ProjectsView {
       this.renderList();
     };
     this.$<HTMLButtonElement>("#proj-new").onclick = () => this.renderNew();
+    this.$<HTMLButtonElement>("#proj-files").onclick = () => this.renderAllFiles();
   }
 
   show() {
@@ -164,7 +216,11 @@ export class ProjectsView {
 
   private async load() {
     try {
+      // Reminders unavailable: the projects still show.
+      const asked = Promise.all([pending(), notes()]).catch(() => null);
       this.listing = await listProjects();
+      const r = await asked;
+      this.reminders = r && { list: r[0], notes: r[1] };
     } catch (e) {
       const groups = this.$("#proj-groups");
       groups.replaceChildren(el("p", "panel-empty", `Projects unavailable: ${e instanceof Error ? e.message : String(e)}`));
@@ -200,10 +256,28 @@ export class ProjectsView {
       };
       return li;
     };
+    const plain = (name: string, detail: string) => {
+      const li = el<HTMLLIElement>("li", "row");
+      li.dataset.state = "ok";
+      li.append(el("span", "row-name", name), el("span", "row-detail", detail));
+      return li;
+    };
+    const when = (iso: string) =>
+      new Date(iso).toLocaleString("en-US", { timeZone: localZone(), weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    const out: HTMLElement[] = [];
+    if (this.reminders) {
+      const rows = [
+        ...this.reminders.list
+          .filter((r) => match(r.text))
+          .map((r) => plain(r.text, [when(r.due_at), r.repeat && `repeats ${r.repeat}`].filter(Boolean).join(" · "))),
+        ...this.reminders.notes.filter((n) => match(n.text)).map((n) => plain(n.text, n.kind)),
+      ];
+      out.push(section("Reminders & notes", rows, "None · ask Jarvis to remind you"));
+    }
     const local = l.local
       .filter((p) => match(p.name, p.description))
       .map((p) => row(localKey(p), p.name, p.description || "Jarvis project"));
-    const out = [section("Jarvis projects", local, "None yet · New project, or ask Jarvis")];
+    out.push(section("Jarvis projects", local, "None yet · New project, or ask Jarvis"));
     if (l.github) {
       const repos = l.github.repos.filter((r) => match(r.name, r.description, r.language));
       const repoRow = (r: Repo) =>
@@ -313,34 +387,29 @@ export class ProjectsView {
     const p = el("p", "intel-listen");
     p.append(link(r.html_url, "Open on GitHub"));
     body.append(p);
-    const base = `/web/projects/github/${encodeURIComponent(r.owner)}/${encodeURIComponent(r.name)}`;
-    let tree: { files: { path: string; size: number }[]; truncated: boolean };
+    let tree: { files: ProjectFile[]; truncated: boolean };
     try {
-      tree = await webGet(`${base.slice(5)}/tree`);
+      tree = await projectFiles({ kind: "repo", name: r.name, repo: r });
     } catch (e) {
       if (this.selected === key) body.append(el("p", "panel-empty", `Files unavailable: ${e instanceof Error ? e.message : String(e)}`));
       return;
     }
     if (this.selected !== key) return;
-    const file = (path: string, size: number): ProjectFile => {
-      const url = `${base}/file?path=${encodeURIComponent(path)}`;
-      return { path, size, url, load: () => fetchBytes(url) };
-    };
     const readme = tree.files.find((f) => /^readme\.(md|markdown)$/i.test(f.path));
     if (readme) {
       const box = el("div", "projects-readme");
       body.append(el("p", "sec-label", "README"), box);
-      void renderFile(box, readme.path, readme.size, file(readme.path, readme.size).load, file(readme.path, readme.size).url).catch(() =>
+      void renderFile(box, readme.path, readme.size, readme.load, readme.url).catch(() =>
         box.replaceChildren(el("p", "panel-empty", "README unavailable")),
       );
     }
     const models = tree.files.filter((f) => kindOf(f.path) === "model").slice(0, 50);
-    if (models.length) this.filesBlock(body, models.map((f) => file(f.path, f.size)), "3D models");
-    this.browser(body, tree, file);
+    if (models.length) this.filesBlock(body, models, "3D models");
+    this.browser(body, tree);
   }
 
   /** A repo's files, folder by folder, with a path filter. */
-  private browser(body: HTMLElement, tree: { files: { path: string; size: number }[]; truncated: boolean }, file: (path: string, size: number) => ProjectFile) {
+  private browser(body: HTMLElement, tree: { files: ProjectFile[]; truncated: boolean }) {
     body.append(el("p", "sec-label", `Files · ${tree.files.length}${tree.truncated ? " (the first 5,000)" : ""}`));
     const crumbs = el("div", "projects-crumbs");
     const filter = el<HTMLInputElement>("input", "projects-filter");
@@ -349,10 +418,9 @@ export class ProjectsView {
     const list = el("ul", "rows projects-tree");
     const viewer = el("div", "projects-viewer");
     let dir = "";
-    const show = (f: { path: string; size: number }) => {
+    const show = (f: ProjectFile) => {
       this.stopViewer();
-      const pf = file(f.path, f.size);
-      void renderFile(viewer, f.path, f.size, pf.load, pf.url)
+      void renderFile(viewer, f.path, f.size, f.load, f.url)
         .then((close) => {
           if (close) this.closeViewer = close;
         })
@@ -429,25 +497,57 @@ export class ProjectsView {
       body.append(remove);
       return;
     }
-    let files: OutputFile[] = [];
+    let files: ProjectFile[] = [];
     try {
-      files = (await get<{ data?: OutputFile[] }>(`sessions/${encodeURIComponent(p.session_id)}/files`)).data ?? [];
+      files = (await projectFiles({ kind: "local", name: p.name, project: p })).files;
     } catch {
       /* the conversation may be gone */
     }
     if (this.selected !== key) return;
-    const session = p.session_id;
-    this.filesBlock(
-      body,
-      files
-        .filter((f) => f.downloadable)
-        .map((f) => {
-          const url = `/bff/v1/files/${encodeURIComponent(f.id)}/content?session=${encodeURIComponent(session)}`;
-          return { path: f.filename, size: f.size_bytes ?? 0, url, load: () => fetchBytes(url) };
-        }),
-      "Files",
-    );
+    this.filesBlock(body, files, "Files");
     body.append(remove);
+  }
+
+  /** Every project, each opening onto the files that belong to it. */
+  private renderAllFiles() {
+    this.selected = null;
+    this.renderList();
+    const l = this.listing;
+    const body = this.detail("Files by project", "");
+    if (!l) return;
+    const all: [Key, Found][] = [
+      ...l.local.map((p): [Key, Found] => [localKey(p), { kind: "local", name: p.name, project: p }]),
+      ...(l.github?.repos ?? []).map((r): [Key, Found] => [repoKey(r), { kind: "repo", name: `${r.owner}/${r.name}`, repo: r }]),
+    ];
+    if (!all.length) body.append(el("p", "panel-empty", "No projects yet"));
+    for (const [key, f] of all) {
+      const d = el<HTMLDetailsElement>("details", "projects-owned");
+      d.append(el("summary", "", `${f.name} · ${f.kind === "repo" ? "GitHub" : "Jarvis"}`));
+      const ul = el("ul", "rows projects-tree");
+      d.append(ul);
+      // Each project's files are fetched the first time it is opened.
+      d.ontoggle = () => {
+        if (!d.open || ul.childElementCount) return;
+        ul.append(el("li", "panel-empty", "Reading…"));
+        projectFiles(f)
+          .then(({ files, truncated }) => {
+            const rows = files.map((x) => {
+              const li = el<HTMLLIElement>("li", "row");
+              li.tabIndex = 0;
+              li.append(el("span", "row-name", x.path), el("span", "row-detail", kb(x.size)));
+              li.onclick = () => this.select(key);
+              li.onkeydown = (e) => {
+                if (e.key === "Enter") this.select(key);
+              };
+              return li;
+            });
+            if (truncated) rows.push(el("li", "panel-empty", "…and more: open the project to search them"));
+            ul.replaceChildren(...(rows.length ? rows : [el("li", "panel-empty", "No files yet")]));
+          })
+          .catch((e) => ul.replaceChildren(el("li", "panel-empty", `Files unavailable: ${e instanceof Error ? e.message : String(e)}`)));
+      };
+      body.append(d);
+    }
   }
 
   private renderNew() {

@@ -3,14 +3,15 @@
 // clients' sessions never get them). Each reads through /bff, so Jarvis can
 // see exactly what this page can — and nothing it can't. All read-only
 // except `open_panel`, which only moves the HUD, `set_location`, which only
-// changes where this browser thinks he is, and the reminders.
+// changes where this browser thinks he is, the reminders, and writing or
+// moving a repo's files, which wait for him to tap Approve in the transcript.
 
 import { get, webGet } from "../api";
 import { compactBriefing, withLocalWeather, type Briefing } from "./briefing";
 import { compactJobs, type Job } from "./jobs";
 import * as location from "./location";
 import * as reminders from "./reminders";
-import { createProject, listProjects } from "./projects";
+import { createProject, found, listProjects, moveRepoFile, projectFiles, writeRepoFile } from "./projects";
 import { miles, minutes, shortName, type Route } from "./route";
 import * as watch from "./intel/watch";
 
@@ -189,6 +190,71 @@ const TOOLS: ToolDef[] = [
   },
   {
     type: "custom",
+    name: "project_files",
+    description:
+      "The files of one of his projects (a GitHub repo's default branch, or what a Jarvis project's conversation saved), " +
+      "with sizes. Use it to see which files belong to which project before reading or fixing them.",
+    input_schema: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "Its name, as projects_list gives it" },
+        filter: { type: "string", description: "Only paths containing this, e.g. spec" },
+      },
+      required: ["project"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "project_read_file",
+    description: "Read one text file of one of his projects (a path from project_files).",
+    input_schema: {
+      type: "object",
+      properties: { project: { type: "string" }, path: { type: "string" } },
+      required: ["project", "path"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "project_write_file",
+    description:
+      "Create or replace one text file in one of his GitHub repos, as one commit on its default branch. He sees the whole " +
+      "file and must tap Approve first; say what you're changing and why before calling it. Read the file first when it " +
+      "exists, and write the whole file. A Jarvis project's files are written in its own conversation instead " +
+      "(project_continue, then save to /mnt/session/outputs/).",
+    input_schema: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "The repo's name" },
+        path: { type: "string", description: "e.g. docs/spec.md" },
+        content: { type: "string", description: "The whole file" },
+        message: { type: "string", description: "The commit message" },
+      },
+      required: ["project", "path", "content"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "project_move_file",
+    description:
+      "Move or rename one file within one of his GitHub repos, as one commit; never over a file already there. He must tap " +
+      "Approve first. To put a file in another project, read it, write it there, then tell him the original is still in place.",
+    input_schema: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "The repo's name" },
+        from: { type: "string" },
+        to: { type: "string" },
+        message: { type: "string", description: "The commit message" },
+      },
+      required: ["project", "from", "to"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
     name: "directions",
     description:
       "Driving directions to an address, business or place, from where he is (or from `from`, a place he names): distance, " +
@@ -258,13 +324,18 @@ const TOOLS: ToolDef[] = [
     description:
       "Set a reminder that the HUD speaks when it is due (or at his next unlock if no HUD is open). Give either " +
       "in_minutes, or at as his local wall time 'YYYY-MM-DDTHH:MM' (or RFC 3339 with an offset). If you don't know " +
-      "today's date, call list_reminders first: it returns the current time. Confirm the time back to him in words.",
+      "today's date, call list_reminders first: it returns the current time. For one that repeats ('every weekday at 8'), " +
+      "add repeat and give at as its first time. Confirm the time (and how it repeats) back to him in words.",
     input_schema: {
       type: "object",
       properties: {
         text: { type: "string", description: "What to remind him of, as it should be said: 'call Josh about the invoice'" },
         at: { type: "string", description: "His local wall time, e.g. 2026-09-29T09:00" },
         in_minutes: { type: "number", description: "Minutes from now, instead of at" },
+        repeat: {
+          type: "string",
+          description: "daily, weekdays, weekly:1,3,5 (days, 0 = Sunday … 6 = Saturday) or every:N (every N days)",
+        },
       },
       required: ["text"],
       additionalProperties: false,
@@ -273,13 +344,55 @@ const TOOLS: ToolDef[] = [
   {
     type: "custom",
     name: "list_reminders",
-    description: "The reminders not yet spoken (id, text, due_at, due), and the current time where he is as `now`.",
+    description:
+      "The reminders not yet spoken (id, text, due_at, due, repeat), his open notes and tasks (id, kind, text), " +
+      "and the current time where he is as `now`.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     type: "custom",
     name: "cancel_reminder",
-    description: "Cancel a reminder by the id list_reminders gave.",
+    description: "Cancel a reminder (all of it, if it repeats) by the id list_reminders gave.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "number" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "snooze_reminder",
+    description: "Say a reminder again in a few minutes ('snooze', 'remind me again in 20'): the one just spoken, unless he names another.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "number", description: "From list_reminders; leave out for the one just spoken" },
+        minutes: { type: "number", description: "Default 10" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "take_note",
+    description:
+      "Save a note or task he gives without a time ('note: look into the new XREAL firmware'). Save it at once, as he said it, " +
+      "without follow-up questions. To give one a time later, set_reminder then close_note.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string" },
+        kind: { type: "string", enum: ["note", "task"], description: "task for something to do; note otherwise" },
+      },
+      required: ["text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "close_note",
+    description: "Mark a note or task done, or remove it, by the id list_reminders gave.",
     input_schema: {
       type: "object",
       properties: { id: { type: "number" } },
@@ -342,6 +455,9 @@ function compactHere(): unknown {
   };
 }
 
+/** The most of a file handed to Jarvis at once. */
+const READ_MAX = 60_000;
+
 export async function runTool(
   name: string,
   input: unknown,
@@ -350,6 +466,8 @@ export async function runTool(
     showRoute(r: Route, where: "apple_maps" | "here"): void;
     openProject(name: string): Promise<boolean>;
     continueProject(name: string): Promise<"continued" | "repo" | "none">;
+    /** Shows a change in full; resolves once he taps Approve or Decline. */
+    approve(summary: string, detail: string): Promise<boolean>;
     /** The conversation the tool was called in. */
     session: string | null;
     jobs(): Job[];
@@ -397,16 +515,29 @@ export async function runTool(
             is_error: true,
           };
         }
-        const r = await reminders.create(text, at);
-        return { content: JSON.stringify({ set: { id: r.id, text: r.text, due_at: reminders.localIso(new Date(r.due_at)) }, now: reminders.localNow() }) };
+        const repeat = typeof args.repeat === "string" && args.repeat.trim() ? args.repeat.trim() : undefined;
+        const r = await reminders.create(text, at, repeat);
+        return {
+          content: JSON.stringify({
+            set: { id: r.id, text: r.text, due_at: reminders.localIso(new Date(r.due_at)), repeat: r.repeat ?? undefined },
+            now: reminders.localNow(),
+          }),
+        };
       }
       case "list_reminders": {
-        const list = await reminders.pending();
+        const [list, notes] = await Promise.all([reminders.pending(), reminders.notes()]);
         return {
           content: JSON.stringify({
             now: reminders.localNow(),
             time_zone: location.localZone(),
-            reminders: list.map((r) => ({ id: r.id, text: r.text, due_at: reminders.localIso(new Date(r.due_at)), due: r.due })),
+            reminders: list.map((r) => ({
+              id: r.id,
+              text: r.text,
+              due_at: reminders.localIso(new Date(r.due_at)),
+              due: r.due,
+              repeat: r.repeat ?? undefined,
+            })),
+            notes: notes.map((n) => ({ id: n.id, kind: n.kind, text: n.text })),
           }),
         };
       }
@@ -415,6 +546,25 @@ export async function runTool(
         if (!Number.isInteger(id)) return { content: "id must be a reminder id from list_reminders", is_error: true };
         await reminders.cancel(id);
         return { content: `cancelled reminder ${id}` };
+      }
+      case "snooze_reminder": {
+        const id = args.id === undefined ? undefined : Number(args.id);
+        if (id !== undefined && !Number.isInteger(id)) return { content: "id must be a reminder id from list_reminders", is_error: true };
+        const minutes = typeof args.minutes === "number" ? Math.round(args.minutes) : undefined;
+        const r = await reminders.snooze(id, minutes);
+        return { content: JSON.stringify({ snoozed: { id: r.id, text: r.text, due_at: reminders.localIso(new Date(r.due_at)) } }) };
+      }
+      case "take_note": {
+        const text = typeof args.text === "string" ? args.text.trim() : "";
+        if (!text) return { content: "need text", is_error: true };
+        const n = await reminders.addNote(text, args.kind === "task" ? "task" : "note");
+        return { content: JSON.stringify({ saved: { id: n.id, kind: n.kind, text: n.text } }) };
+      }
+      case "close_note": {
+        const id = Number(args.id);
+        if (!Number.isInteger(id)) return { content: "id must be a note id from list_reminders", is_error: true };
+        await reminders.closeNote(id);
+        return { content: `closed note ${id}` };
       }
       case "projects_list": {
         const l = await listProjects();
@@ -466,6 +616,63 @@ export async function runTool(
         return (await ui.openProject(name))
           ? { content: `showing ${name} in the Projects tab` }
           : { content: `no project called ${name}: call projects_list`, is_error: true };
+      }
+      case "project_files":
+      case "project_read_file":
+      case "project_write_file":
+      case "project_move_file": {
+        const project = typeof args.project === "string" ? args.project.trim() : "";
+        const f = project ? found(await listProjects(), project) : null;
+        if (!f) return { content: `no project called ${project}: call projects_list`, is_error: true };
+        const str = (k: string) => (typeof args[k] === "string" ? (args[k] as string).trim() : "");
+        if (name === "project_files") {
+          const { files, truncated } = await projectFiles(f);
+          const q = str("filter").toLowerCase();
+          const hits = files.filter((x) => !q || x.path.toLowerCase().includes(q));
+          return {
+            content: JSON.stringify({
+              project: f.name,
+              kind: f.kind === "repo" ? "github" : "jarvis",
+              files: hits.slice(0, 300).map((x) => ({ path: x.path, size: x.size })),
+              more: hits.length > 300 || truncated ? "more files: narrow with filter" : undefined,
+              note: f.kind === "local" && !f.project.session_id ? "no conversation yet, so no files" : undefined,
+            }),
+          };
+        }
+        if (name === "project_read_file") {
+          const file = (await projectFiles(f)).files.find((x) => x.path === str("path"));
+          if (!file) return { content: `no file ${str("path")} in ${f.name}: call project_files`, is_error: true };
+          let text: string;
+          try {
+            text = new TextDecoder("utf-8", { fatal: true }).decode(await file.load());
+          } catch {
+            return { content: `${file.path} isn't text (a model or binary): it can't be read here`, is_error: true };
+          }
+          return { content: text.length > READ_MAX ? `${text.slice(0, READ_MAX)}\n[… cut at ${READ_MAX} characters]` : text };
+        }
+        if (f.kind !== "repo")
+          return {
+            content: `${f.name} is a Jarvis project: its files are written in its own conversation (project_continue, then save to /mnt/session/outputs/)`,
+            is_error: true,
+          };
+        const message = str("message") || undefined;
+        if (name === "project_write_file") {
+          const path = str("path");
+          const content = typeof args.content === "string" ? args.content : "";
+          if (!path) return { content: "need path and content", is_error: true };
+          const exists = (await projectFiles(f)).files.some((x) => x.path === path);
+          const ok = await ui.approve(`${exists ? "Replace" : "Create"} ${path} in ${f.name}?`, content);
+          if (!ok) return { content: "he declined: nothing was written; ask what he'd like changed" };
+          const r = await writeRepoFile(f.repo, path, content, message);
+          return { content: JSON.stringify({ written: r.path, project: f.name, commit: r.commit.slice(0, 7) }) };
+        }
+        const from = str("from");
+        const to = str("to");
+        if (!from || !to) return { content: "need from and to", is_error: true };
+        const ok = await ui.approve(`Move ${from} to ${to} in ${f.name}?`, `${from}\n→ ${to}`);
+        if (!ok) return { content: "he declined: nothing was moved" };
+        const r = await moveRepoFile(f.repo, from, to, message);
+        return { content: JSON.stringify({ moved: r.from, to: r.to, project: f.name, commit: r.commit.slice(0, 7) }) };
       }
       case "directions": {
         const to = typeof args.to === "string" ? args.to.trim() : "";

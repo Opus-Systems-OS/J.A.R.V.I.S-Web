@@ -239,7 +239,34 @@ export class Transcript {
     return div;
   }
 
-  private tool(summary: string, detail: string) {
+  /** A change Jarvis asks to make, shown in full: nothing happens until he
+   * taps Approve. */
+  approval(summary: string, detail: string): Promise<boolean> {
+    const d = this.tool(summary, detail, Infinity);
+    d.open = true;
+    d.classList.add("entry-approval");
+    const row = document.createElement("div");
+    row.className = "entry-approval-actions";
+    const ok = document.createElement("button");
+    ok.className = "btn-primary btn-small";
+    ok.textContent = "Approve";
+    const no = document.createElement("button");
+    no.className = "btn-ghost btn-small";
+    no.textContent = "Decline";
+    row.append(ok, no);
+    d.appendChild(row);
+    this.scroll(true);
+    return new Promise((resolve) => {
+      const decide = (yes: boolean) => {
+        row.replaceChildren(yes ? "Approved" : "Declined");
+        resolve(yes);
+      };
+      ok.onclick = () => decide(true);
+      no.onclick = () => decide(false);
+    });
+  }
+
+  private tool(summary: string, detail: string, max = 4000): HTMLDetailsElement {
     const d = document.createElement("details");
     d.className = "entry entry-tool";
     const s = document.createElement("summary");
@@ -247,10 +274,11 @@ export class Transcript {
     d.appendChild(s);
     if (detail) {
       const pre = document.createElement("pre");
-      pre.textContent = truncate(detail, 4000);
+      pre.textContent = truncate(detail, max);
       d.appendChild(pre);
     }
     this.list.appendChild(d);
+    return d;
   }
 
   private pending(id?: string): HTMLDivElement | null {
