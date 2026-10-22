@@ -37,7 +37,8 @@ type RecognitionEvent = {
   results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
 };
 
-export type ListenerState = "off" | "passive" | "awake" | "paused" | "unsupported" | "denied" | "unavailable";
+/** `waiting`: cloud ears asked for the mic but aren't hearing yet (the prompt, or a tap). */
+export type ListenerState = "off" | "waiting" | "passive" | "awake" | "paused" | "unsupported" | "denied" | "unavailable";
 
 export type Engine = "browser" | "cloud";
 
@@ -102,6 +103,8 @@ export function stripWake(text: string): { woke: boolean; rest: string } {
 export class Listener {
   private rec: Recognition | null = null;
   private ears: CloudEars | null = null;
+  /** The cloud ears are actually receiving the mic. */
+  private earsUp = false;
   private wanted = false; // should be running (not paused, not off)
   private running = false;
   private followUpUntil = 0;
@@ -140,8 +143,13 @@ export class Listener {
     if (!CloudEars.supported()) return this.setState(Listener.supported() ? "unavailable" : "unsupported");
     this.ev.onEngine?.("cloud");
     this.wanted = true;
+    this.earsUp = false;
+    this.setState("waiting");
     this.ears = new CloudEars({
-      started: () => this.setState(this.awake() ? "awake" : "passive"),
+      started: () => {
+        this.earsUp = true;
+        if (this.state === "waiting") this.setState(this.awake() ? "awake" : "passive");
+      },
       hearing: (active) => {
         this.speaking = active;
         if (this.pending !== null) {
@@ -249,7 +257,7 @@ export class Listener {
     this.wanted = true;
     if (this.ears) {
       this.ears.resume();
-      this.setState(this.awake() ? "awake" : "passive");
+      this.setState(!this.earsUp ? "waiting" : this.awake() ? "awake" : "passive");
     }
     this.resume();
   }
@@ -263,7 +271,7 @@ export class Listener {
       this.ears?.resume();
       this.resume();
     }
-    this.setState("awake");
+    this.setState(this.ears && !this.earsUp ? "waiting" : "awake");
   }
 
   stop() {
