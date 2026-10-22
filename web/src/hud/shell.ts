@@ -14,6 +14,7 @@ import { Jarvis, MODELS, type Phase } from "./jarvis";
 import { Listener, type Engine, type ListenerState } from "./listener";
 import { MicLease } from "./micLease";
 import { Speaker } from "./speaker";
+import { ProjectsView } from "./projects";
 import { SystemsView } from "./systems";
 import { TerminalView, terminalTask } from "./terminal";
 import { compactOps, tabsFor } from "./tools";
@@ -84,6 +85,7 @@ const template = (full: boolean) => html`
     </aside>
   </div>
   <div class="view" data-view="Fleet" id="view-fleet" hidden></div>
+  <div class="view" data-view="Projects" id="view-projects" hidden></div>
   <div class="view view-intel" data-view="Intel" id="view-intel" hidden></div>
   <div class="view view-reverse" data-view="Reverse" id="view-reverse" hidden></div>
   <div class="view" data-view="Systems" id="view-systems" hidden></div>
@@ -182,6 +184,8 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   const fleetView = full ? new FleetView($("#view-fleet")) : new FleetView($("#view-fleet"), []);
   // Everyone sees Systems; only the owner lifts a ban.
   const systemsView = new SystemsView($("#view-systems"), full);
+  // Each profile's own repos (its own token) and Jarvis projects.
+  const projectsView: ProjectsView = new ProjectsView($("#view-projects"), { sessionId: (): string | null => jarvis.session });
   const usageView = new UsageView($("#view-usage"), (c) => watch.observe(c), full);
   /** What a tab's written reply (an Intel brief, a Reverse report) may say aloud: its first line. */
   const speakLead = (line: string) => {
@@ -237,6 +241,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     root.dataset.tab = tab;
     if (current === "Fleet") fleetView.hide();
     if (current === "Systems") systemsView.hide();
+    if (current === "Projects") projectsView.hide();
     if (current === "Usage") usageView.hide();
     if (current === "Intel") intelView?.hide();
     if (current === "Reverse") reverseView.hide();
@@ -245,6 +250,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     if (tab === "Reverse") reverseView.show();
     if (tab === "Fleet") fleetView.show();
     if (tab === "Systems") systemsView.show();
+    if (tab === "Projects") projectsView.show();
     if (tab === "Usage") usageView.show();
     if (tab === "Terminal") terminal.focus();
   };
@@ -374,6 +380,10 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       meta.textContent = `$${(cost / 100).toFixed(2)}${cap ? ` of $${(cap / 100).toFixed(2)}` : ""}`;
     },
     openPanel,
+    openProject: async (name): Promise<boolean> => {
+      openPanel("Projects");
+      return projectsView.open(name);
+    },
     showRoute: (route, where) => {
       if (where === "apple_maps") {
         transcript.link(`Open in Apple Maps · ${shortName(route)}`, appleMapsUrl(route));
@@ -796,6 +806,7 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       jarvis.detach();
       fleetView.dispose();
       systemsView.dispose();
+      projectsView.dispose();
       intelView?.dispose();
       reverseView.dispose();
       usageView.dispose();

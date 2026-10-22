@@ -182,8 +182,9 @@ The lock screen asks who you are, then that profile's passphrase.
 - **Mr. Powers** appears when both `JARVIS_WEB_POWERS_PASSWORD_HASH` and
   `WEB_POWERS_API_KEY_FILE` are set (the same `hash-password` step; he types his own).
   - Least privilege: his own conversation on the `jarvis-powers` agent, his own
-    reminders, visits and microphone lease, and the Fleet, Intel, Reverse,
-    Systems, Usage and Terminal tabs. Systems needs `ops:read` on his key
+    reminders, visits and microphone lease, and the Fleet, Projects, Intel,
+    Reverse, Systems, Usage and Terminal tabs. Projects shows his own repos,
+    the org's (with his own GitHub token) and his own Jarvis projects. Systems needs `ops:read` on his key
     (`opus-api keys grant --id <id> --scopes ops:read`); he sees Defenses but
     only the owner lifts a ban.
   - No Jobs, briefing or credit ledger.

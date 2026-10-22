@@ -88,6 +88,8 @@ export interface JarvisEvents {
   openPanel(tab: string): void;
   /** `show_route`: hand a route to Apple Maps (a tappable link) or the globe. */
   showRoute(route: Route, where: "apple_maps" | "here"): void;
+  /** `project_open`: the Projects tab on a project; false when there's none. */
+  openProject(name: string): Promise<boolean>;
   /** The jobs this HUD is watching (for the `fleet_jobs` tool). */
   jobs(): Job[];
   /** Every event of the conversation, for other views (the terminal). */
@@ -357,6 +359,8 @@ export class Jarvis {
     const result = await runTool(name, input, {
       openPanel: (t) => this.ev.openPanel(t),
       showRoute: (r, w) => this.ev.showRoute(r, w),
+      openProject: (n) => this.ev.openProject(n),
+      session: this.sessionId,
       jobs: () => this.ev.jobs(),
       full: this.profile.full,
     });

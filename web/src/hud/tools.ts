@@ -10,6 +10,7 @@ import { compactBriefing, withLocalWeather, type Briefing } from "./briefing";
 import { compactJobs, type Job } from "./jobs";
 import * as location from "./location";
 import * as reminders from "./reminders";
+import { createProject, listProjects } from "./projects";
 import { miles, minutes, shortName, type Route } from "./route";
 import * as watch from "./intel/watch";
 
@@ -21,8 +22,8 @@ export interface ToolDef {
 }
 
 /** The HUD's tabs: the owner's, and everyone else's (no Systems). */
-export const TABS_FULL = ["HUD", "Fleet", "Intel", "Reverse", "Systems", "Usage", "Terminal"];
-export const TABS_LIMITED = ["HUD", "Fleet", "Intel", "Reverse", "Systems", "Usage", "Terminal"];
+export const TABS_FULL = ["HUD", "Fleet", "Projects", "Intel", "Reverse", "Systems", "Usage", "Terminal"];
+export const TABS_LIMITED = ["HUD", "Fleet", "Projects", "Intel", "Reverse", "Systems", "Usage", "Terminal"];
 export const tabsFor = (full: boolean) => (full ? TABS_FULL : TABS_LIMITED);
 
 /** The owner's alone: the services, his day, the jobs he dispatched. */
@@ -33,7 +34,7 @@ const openPanelTool = (tabs: string[]): ToolDef => ({
   name: "open_panel",
   description:
     `Switch the HUD the user is looking at to one of its tabs: ${tabs.join(", ")}. HUD is the orb, Fleet the agents and ` +
-    "sessions, Usage spend, Terminal the sandbox" +
+    "sessions, Projects his GitHub repos and Jarvis projects (with their 3D models), Usage spend, Terminal the sandbox" +
     (tabs.includes("Systems") ? ", Systems the architecture map" : "") +
     (tabs.includes("Intel") ? ", Intel the live news and hazards globe" : "") +
     (tabs.includes("Reverse") ? ", Reverse the reverse-engineering bench (REA)" : "") +
@@ -129,6 +130,46 @@ const TOOLS: ToolDef[] = [
     input_schema: {
       type: "object",
       properties: { filter: { type: "string", description: "A word to match, e.g. California" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "projects_list",
+    description:
+      "His projects: Jarvis projects (ones that live here, in the Projects tab) and his GitHub repos (his own account's and " +
+      "the Opus-Systems-OS org's), with language, private or public, and last push.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    type: "custom",
+    name: "project_create",
+    description:
+      "Start a new project. If he hasn't said which kind, first ask exactly: \"Shall this be a GitHub repository or a " +
+      "project on here?\" kind github makes a repository (private unless he says public; in his own account unless he " +
+      "says the Opus-Systems-OS org); kind here makes a Jarvis project tied to this conversation, so the files and 3D " +
+      "models you make in your sandbox show up in it. Confirm the name back to him.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "For GitHub: letters, digits, . - _ only, e.g. iron-suit" },
+        kind: { type: "string", enum: ["github", "here"] },
+        description: { type: "string" },
+        private: { type: "boolean", description: "GitHub only; true unless he says public" },
+        org: { type: "boolean", description: "GitHub only; true to create it in Opus-Systems-OS" },
+      },
+      required: ["name", "kind"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "project_open",
+    description: "Open the Projects tab on one of his projects, by name, showing its details and 3D models.",
+    input_schema: {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
       additionalProperties: false,
     },
   },
@@ -290,7 +331,15 @@ function compactHere(): unknown {
 export async function runTool(
   name: string,
   input: unknown,
-  ui: { openPanel(tab: string): void; showRoute(r: Route, where: "apple_maps" | "here"): void; jobs(): Job[]; full: boolean },
+  ui: {
+    openPanel(tab: string): void;
+    showRoute(r: Route, where: "apple_maps" | "here"): void;
+    openProject(name: string): Promise<boolean>;
+    /** The conversation the tool was called in. */
+    session: string | null;
+    jobs(): Job[];
+    full: boolean;
+  },
 ): Promise<{ content: string; is_error?: boolean }> {
   const args = (input ?? {}) as Record<string, unknown>;
   if (!ui.full && OWNER_ONLY.has(name)) return { content: `this page has no tool named ${name}`, is_error: true };
@@ -351,6 +400,48 @@ export async function runTool(
         if (!Number.isInteger(id)) return { content: "id must be a reminder id from list_reminders", is_error: true };
         await reminders.cancel(id);
         return { content: `cancelled reminder ${id}` };
+      }
+      case "projects_list": {
+        const l = await listProjects();
+        return {
+          content: JSON.stringify({
+            jarvis_projects: l.local.map((p) => ({ name: p.name, description: p.description || undefined })),
+            github: l.github
+              ? {
+                  login: l.github.login,
+                  repos: l.github.repos.slice(0, 80).map((r) => ({
+                    name: r.name,
+                    owner: r.owner,
+                    private: r.private,
+                    language: r.language ?? undefined,
+                    pushed_at: r.pushed_at ?? undefined,
+                  })),
+                }
+              : { unavailable: l.github_error },
+          }),
+        };
+      }
+      case "project_create": {
+        const name = typeof args.name === "string" ? args.name.trim() : "";
+        const kind = args.kind === "github" ? "github" : args.kind === "here" ? "here" : null;
+        if (!name || !kind) return { content: "need name, and kind github or here (ask him which)", is_error: true };
+        const made = await createProject({
+          kind,
+          name,
+          description: typeof args.description === "string" ? args.description : undefined,
+          private: args.private !== false,
+          org: args.org === true,
+          session: ui.session,
+        });
+        await ui.openProject(made);
+        return { content: JSON.stringify({ created: made, kind, shown: "in the Projects tab" }) };
+      }
+      case "project_open": {
+        const name = typeof args.name === "string" ? args.name.trim() : "";
+        if (!name) return { content: "need name", is_error: true };
+        return (await ui.openProject(name))
+          ? { content: `showing ${name} in the Projects tab` }
+          : { content: `no project called ${name}: call projects_list`, is_error: true };
       }
       case "directions": {
         const to = typeof args.to === "string" ? args.to.trim() : "";
