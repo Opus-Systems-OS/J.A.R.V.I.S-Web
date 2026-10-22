@@ -205,7 +205,6 @@ export class CloudEars {
     }
     try {
       this.ctx = new AudioContext();
-      if (this.ctx.state === "suspended") await this.ctx.resume();
       await this.ctx.audioWorklet.addModule("/capture-worklet.js");
       const src = this.ctx.createMediaStreamSource(this.stream);
       this.node = new AudioWorkletNode(this.ctx, "jarvis-capture");
@@ -218,7 +217,20 @@ export class CloudEars {
       src.connect(this.node);
       this.node.connect(mute);
       mute.connect(this.ctx.destination);
-      this.ev.started();
+      const ctx = this.ctx;
+      if (ctx.state === "running") return this.ev.started();
+      // Made outside a user gesture (after the mic prompt, or a reload with no
+      // unlock tap), the context stays suspended and resume() never settles
+      // until a tap: wait for one instead of hanging silently.
+      ctx.onstatechange = () => {
+        if (ctx.state !== "running") return;
+        ctx.onstatechange = null;
+        this.dropTap();
+        this.ev.started();
+      };
+      document.addEventListener("pointerdown", this.tap, { capture: true, passive: true });
+      document.addEventListener("keydown", this.tap, { capture: true, passive: true });
+      void ctx.resume().catch(() => undefined);
     } catch {
       this.stop();
       this.ev.failed("unavailable");
@@ -235,7 +247,16 @@ export class CloudEars {
     this.paused = false;
   }
 
+  private readonly tap = () => void this.ctx?.resume().catch(() => undefined);
+
+  private dropTap() {
+    document.removeEventListener("pointerdown", this.tap, { capture: true });
+    document.removeEventListener("keydown", this.tap, { capture: true });
+  }
+
   stop() {
+    this.dropTap();
+    if (this.ctx) this.ctx.onstatechange = null;
     this.node?.disconnect();
     this.node = null;
     this.stream?.getTracks().forEach((t) => t.stop());

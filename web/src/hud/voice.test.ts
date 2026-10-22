@@ -240,3 +240,71 @@ describe("ago", () => {
     expect(ago(undefined, now)).toBe("");
   });
 });
+
+describe("cloud ears that haven't started (Mr. Powers, 2026-10-22)", () => {
+  /** Browser globals for cloud ears; `gum` is what getUserMedia returns. */
+  const stub = (gum: () => Promise<unknown>) => {
+    const taps: (() => void)[] = [];
+    vi.stubGlobal("window", globalThis);
+    vi.stubGlobal("navigator", { mediaDevices: { getUserMedia: gum } });
+    vi.stubGlobal("document", { addEventListener: (_: string, f: () => void) => taps.push(f), removeEventListener: () => {} });
+    const node = { connect: () => {}, disconnect: () => {} };
+    vi.stubGlobal(
+      "AudioWorkletNode",
+      class {
+        port = { onmessage: null };
+        connect() {}
+        disconnect() {}
+      },
+    );
+    let ctx: { state: string; onstatechange: (() => void) | null } | null = null;
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        state = "suspended"; // made outside a gesture
+        sampleRate = 48_000;
+        onstatechange: (() => void) | null = null;
+        destination = node;
+        audioWorklet = { addModule: async () => {} };
+        constructor() {
+          ctx = this;
+        }
+        createMediaStreamSource = () => node;
+        createGain = () => ({ ...node, gain: { value: 1 } });
+        resume = () => new Promise(() => {}); // never settles without a tap
+        close = async () => {};
+      },
+    );
+    const tap = () => {
+      taps.forEach((f) => f());
+      ctx!.state = "running";
+      ctx!.onstatechange?.();
+    };
+    return { tap };
+  };
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("says it is waiting while the mic prompt is unanswered, even after Jarvis speaks", async () => {
+    stub(() => new Promise(() => {}));
+    const states: string[] = [];
+    const l = new Listener({ onCommand: () => {}, onHearing: () => {}, onState: (s) => states.push(s) });
+    l.start();
+    expect(states.at(-1)).toBe("waiting");
+    l.pause(); // the greeting
+    l.resumeAfterSpeech(false);
+    expect(states.at(-1)).toBe("waiting");
+    l.stop();
+  });
+
+  it("listens once a tap wakes the suspended audio", async () => {
+    const { tap } = stub(async () => ({ getTracks: () => [] }));
+    const states: string[] = [];
+    const l = new Listener({ onCommand: () => {}, onHearing: () => {}, onState: (s) => states.push(s) });
+    l.start();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(states.at(-1)).toBe("waiting");
+    tap();
+    expect(states.at(-1)).toBe("passive");
+    l.stop();
+  });
+});
