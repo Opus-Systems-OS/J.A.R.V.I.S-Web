@@ -86,13 +86,41 @@ export interface GlobeEvents {
 
 const USA: [number, number] = [-98, 38];
 const MIN_ZOOM = 0.75;
-const MAX_ZOOM = 9;
+/** About 250 km across: a metro area. Past this, 1:50m coastlines turn to
+ * straight segments; going deeper needs the 1:10m map (3.6 MB). */
+const MAX_ZOOM = 60;
+/** Past this, the 1:50m coastlines and borders load and are drawn instead. */
+const DETAIL_ZOOM = 2.5;
 const IDLE_MS = 5000;
 
 const world = worldData as unknown as Topology<{ countries: GeometryCollection; land: GeometryCollection }>;
 const states = statesData as unknown as Topology<{ states: GeometryCollection; nation: GeometryCollection }>;
 const LAND = feature(world, world.objects.land);
 const BORDERS = mesh(world, world.objects.countries, (a, b) => a !== b);
+
+type Outline = { land: GeoPermissibleObjects; borders: GeoPermissibleObjects };
+/** The finer map, loaded the first time anyone zooms in (≈0.75 MB). */
+let fine: Outline | null = null;
+let fineLoading = false;
+function loadFine() {
+  if (fine || fineLoading) return;
+  fineLoading = true;
+  // By URL, not as a module: a typed 0.75 MB import stalls the type checker.
+  void import("world-atlas/countries-50m.json?url")
+    .then((m) => fetch(m.default))
+    .then((r) => r.json())
+    .then((json) => {
+      const w = json as Topology<{ countries: GeometryCollection; land: GeometryCollection }>;
+      fine = { land: feature(w, w.objects.land), borders: mesh(w, w.objects.countries, (a, b) => a !== b) };
+    })
+    .catch(() => (fineLoading = false));
+}
+
+/** Wheel zoom about the cursor: the view centre moves toward the point under
+ * it by the share of the view the zoom takes away, so that point stays put. */
+export function zoomCentre(centre: [number, number], cursor: [number, number], z0: number, z1: number): [number, number] {
+  return geoInterpolate(centre, cursor)(Math.max(0, 1 - z0 / z1));
+}
 const STATE_LINES = mesh(states, states.objects.states, (a, b) => a !== b);
 const GRATICULE = geoGraticule10();
 
@@ -316,7 +344,15 @@ export class Globe {
         e.preventDefault();
         this.flight = null;
         this.lastInput = performance.now();
-        this.setZoom(this.zoom * Math.exp(-e.deltaY * 0.0015));
+        const z0 = this.zoom;
+        this.setZoom(z0 * Math.exp(-e.deltaY * 0.0015));
+        // Zooming in heads for what's under the cursor; out just widens.
+        const p = local(e);
+        const at = this.zoom > z0 ? this.projection.invert?.([p.x, p.y]) : null;
+        if (at) {
+          const c = zoomCentre([-this.rotation[0], -this.rotation[1]], at, z0, this.zoom);
+          this.rotation = [-c[0], Math.max(-85, Math.min(85, -c[1]))];
+        }
       },
       { passive: false },
     );
@@ -326,6 +362,12 @@ export class Globe {
 
   private setZoom(z: number) {
     this.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
+    if (this.zoom > DETAIL_ZOOM) loadFine();
+  }
+
+  /** Zoom by `factor` about the view's centre (the + and − buttons). */
+  zoomBy(factor: number) {
+    this.flyTo(-this.rotation[1], -this.rotation[0], this.zoom * factor);
   }
 
   private hit(x: number, y: number): Projected | null {
@@ -394,10 +436,13 @@ export class Globe {
       // Great-circle path between the two view centres.
       const centre = geoInterpolate([-f.from[0], -f.from[1]], [-f.to[0], -f.to[1]])(k);
       this.rotation = [-centre[0], -centre[1]];
-      this.zoom = f.z0 + (f.z1 - f.z0) * k;
+      // Geometric, so a long zoom feels even all the way in.
+      this.zoom = f.z0 * Math.pow(f.z1 / f.z0, k);
+      if (this.zoom > DETAIL_ZOOM) loadFine();
       if (k >= 1) this.flight = null;
     } else if (!this.drag && !this.pinch && !this.selected && t - this.lastInput > IDLE_MS) {
-      this.rotation = [this.rotation[0] + dt * 0.004, this.rotation[1]];
+      // The idle drift slows as you zoom, so the ground never races past.
+      this.rotation = [this.rotation[0] + (dt * 0.004) / Math.max(1, this.zoom), this.rotation[1]];
     }
   }
 
@@ -442,7 +487,7 @@ export class Globe {
     stroke(GRATICULE, `rgba(255, 122, 26, ${0.09 * dim})`, 0.6);
 
     ctx.beginPath();
-    this.path(LAND);
+    this.path(this.zoom > DETAIL_ZOOM && fine ? fine.land : LAND);
     ctx.fillStyle = `rgba(255, 122, 26, ${0.13 * dim})`;
     ctx.fill();
     ctx.strokeStyle = `rgba(255, 168, 80, ${0.75 * dim})`;
@@ -451,7 +496,7 @@ export class Globe {
     ctx.shadowBlur = 6;
     ctx.stroke();
     ctx.shadowBlur = 0;
-    stroke(BORDERS, `rgba(255, 150, 60, ${0.35 * dim})`, 0.6);
+    stroke(this.zoom > DETAIL_ZOOM && fine ? fine.borders : BORDERS, `rgba(255, 150, 60, ${0.35 * dim})`, 0.6);
     stroke(STATE_LINES, `rgba(255, 178, 92, ${0.22 * dim})`, 0.5);
 
     // Rim.

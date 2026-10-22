@@ -1,6 +1,6 @@
 import { geoOrthographic } from "d3-geo";
 import { describe, expect, it } from "vitest";
-import { orthographic } from "./globe";
+import { orthographic, zoomCentre } from "./globe";
 
 describe("orthographic", () => {
   it("matches d3's projection on the near side and hides the far side", () => {
@@ -14,5 +14,16 @@ describe("orthographic", () => {
       expect(ours![1]).toBeCloseTo(theirs![1], 6);
     }
     expect(orthographic(-38, 82, lat0, lon0, scale, cx, cy)).toBeNull();
+  });
+});
+
+describe("zoomCentre", () => {
+  it("moves the centre toward the cursor by the share of view the zoom removes", () => {
+    const [lon, lat] = zoomCentre([0, 0], [10, 0], 1, 2);
+    expect(lon).toBeCloseTo(5, 6);
+    expect(lat).toBeCloseTo(0, 6);
+    expect(zoomCentre([0, 0], [10, 0], 3, 3)).toEqual([0, 0]);
+    // Zooming out never moves it.
+    expect(zoomCentre([0, 0], [10, 0], 2, 1)).toEqual([0, 0]);
   });
 });
