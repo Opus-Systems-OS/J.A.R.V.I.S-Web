@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { salutation, systemsLine } from "./greeting";
-import { ASSEMBLE_MS, Listener, stripWake } from "./listener";
+import { ASSEMBLE_MAX_MS, ASSEMBLE_MS, Listener, stripWake } from "./listener";
 import { sentences } from "./speaker";
 
 describe("stripWake", () => {
@@ -175,6 +175,18 @@ describe("request assembly (long sentences)", () => {
     final("for venom genes"); // phrase 2's text
     vi.advanceTimersByTime(ASSEMBLE_MS + 10);
     expect(commands).toEqual(["compare the two genomes for venom genes"]);
+  });
+
+  it("a room that never goes quiet still gets the request sent", () => {
+    const { l, commands, final } = setup();
+    (l as unknown as { speaking: boolean }).speaking = true; // people keep talking
+    final("Jarvis, what's the weather");
+    vi.advanceTimersByTime(ASSEMBLE_MAX_MS - 1_000);
+    final("yeah you go to Korea");
+    expect(commands).toEqual([]);
+    vi.advanceTimersByTime(1_000);
+    final("there's none in here");
+    expect(commands).toEqual(["what's the weather yeah you go to Korea there's none in here"]);
   });
 
   it("the same request twice in a row is sent once", () => {
