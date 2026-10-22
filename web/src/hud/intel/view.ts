@@ -55,6 +55,8 @@ const SKELETON = html`
       <div class="intel-overlay intel-controls">
         <button class="btn-ghost" id="intel-us" title="Centre on the United States">U.S.</button>
         <button class="btn-ghost" id="intel-world" title="Show the whole world">World</button>
+        <button class="btn-ghost" id="intel-zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
+        <button class="btn-ghost" id="intel-zoom-out" title="Zoom out" aria-label="Zoom out">−</button>
         <button class="btn-ghost" id="intel-refresh" title="Fetch the feeds again">Refresh</button>
         <button class="btn-ghost" id="intel-region" title="What is happening in the part of the world on screen">This view</button>
       </div>
@@ -243,6 +245,8 @@ export class IntelView {
     this.globe = new Globe(this.$<HTMLCanvasElement>("#intel-globe"), { onSelect: (k) => this.selectNode(k, false) });
     this.$<HTMLButtonElement>("#intel-us").onclick = () => this.globe.home(false);
     this.$<HTMLButtonElement>("#intel-world").onclick = () => this.globe.home(true);
+    this.$<HTMLButtonElement>("#intel-zoom-in").onclick = () => this.globe.zoomBy(2);
+    this.$<HTMLButtonElement>("#intel-zoom-out").onclick = () => this.globe.zoomBy(0.5);
     this.$<HTMLButtonElement>("#intel-refresh").onclick = () => void this.load(true);
     this.$<HTMLButtonElement>("#intel-region").onclick = () => this.renderRegion();
     this.$<HTMLButtonElement>("#intel-search-clear").onclick = () => this.clearSearch();
