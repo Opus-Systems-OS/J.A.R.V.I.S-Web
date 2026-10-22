@@ -21,6 +21,14 @@ const storageKey = (profile: Profile, what: "session" | "model" | "where") =>
 
 /** Marks the line that tells a running conversation he has moved. */
 export const WHERE_TAG = "[location]";
+/** Marks the line that tells a conversation which project it is working on. */
+export const PROJECT_TAG = "[project]";
+
+/** The line that starts work on a Jarvis project in its conversation. */
+export function projectNote(p: { name: string; description?: string }): string {
+  const about = p.description?.trim() ? `: ${p.description.trim()}` : "";
+  return `${PROJECT_TAG} Working on "${p.name}"${about}. Save its files to /mnt/session/outputs/.`;
+}
 
 /** The web client's personality and context, appended to the agent's prompt.
  * `where`: the sentence saying where he is (`location.whereLine`). */
@@ -34,6 +42,7 @@ export function systemSuffix(profile: Profile, where = whereLine()): string {
     "Every reply is spoken aloud by a text-to-speech voice as soon as you send it, so: one to three short sentences unless he asks for detail,",
     "no markdown, no bullet points, no code unless he asks to see it, spell out symbols, and round numbers.",
     "Send one message per turn: say briefly what you are about to do only if it will take more than a few seconds.",
+    `A line beginning ${PROJECT_TAG} in his message names the project this conversation is working on: keep its files (code, docs as .md, 3D models as .glb or .stl) in /mnt/session/outputs/ so they appear in his Projects tab; the line needs no reply of its own.`,
   ];
   if (profile.full) {
     return [
@@ -90,6 +99,8 @@ export interface JarvisEvents {
   showRoute(route: Route, where: "apple_maps" | "here"): void;
   /** `project_open`: the Projects tab on a project; false when there's none. */
   openProject(name: string): Promise<boolean>;
+  /** `project_continue`: back into a Jarvis project's conversation. */
+  continueProject(name: string): Promise<"continued" | "repo" | "none">;
   /** The jobs this HUD is watching (for the `fleet_jobs` tool). */
   jobs(): Job[];
   /** Every event of the conversation, for other views (the terminal). */
@@ -122,6 +133,10 @@ export class Jarvis {
   private readonly silent = new Set<string>();
   private readonly answered = new Set<string>();
   private busy = false;
+  /** `projectNote` for the next spoken message, after `continueProject`. */
+  private pendingProject: string | null = null;
+  /** Ties a project to the conversation its next message starts. */
+  private onNewSession: ((id: string) => void) | null = null;
   /** A terminal command or Intel brief is running: its reply is shown, never spoken. */
   private silentTurn = false;
   /** Who asked for the silent turn ("terminal", "intel"). */
@@ -169,13 +184,48 @@ export class Jarvis {
     this.modelId = id;
     save(storageKey(this.profile, "model"), id || null);
     const label = MODELS.find((m) => m.id === id)?.label ?? id;
+    this.leaveProject();
     this.forget();
     this.transcript.divider(`new conversation · ${label}`);
   }
 
   newConversation() {
+    this.leaveProject();
     this.forget();
     this.transcript.divider("new conversation");
+  }
+
+  /**
+   * Work on a Jarvis project: back into its conversation if that is still
+   * open (its history shown, not spoken), else a fresh one that `onSession`
+   * ties to the project once it exists. The next spoken message tells
+   * Jarvis which project it is.
+   */
+  async continueProject(p: { name: string; description: string; session_id: string | null }, onSession: (id: string) => void) {
+    this.leaveProject();
+    this.pendingProject = projectNote(p);
+    this.transcript.clear();
+    if (p.session_id) {
+      const alive = await get<{ status?: string }>(`sessions/${encodeURIComponent(p.session_id)}`)
+        .then((s) => s.status !== "terminated")
+        .catch(() => false);
+      if (alive) {
+        this.forget();
+        this.sessionId = p.session_id;
+        save(storageKey(this.profile, "session"), this.sessionId);
+        this.transcript.divider(`project · ${p.name}`);
+        await this.attach(true);
+        return;
+      }
+    }
+    this.forget();
+    this.onNewSession = onSession;
+    this.transcript.divider(`project · ${p.name} · new conversation`);
+  }
+
+  private leaveProject() {
+    this.pendingProject = null;
+    this.onNewSession = null;
   }
 
   /**
@@ -183,7 +233,7 @@ export class Jarvis {
    * files alone; the control plane then supplies the words.
    */
   async ask(text: string, opts: { silent?: boolean; tag?: string; attachments?: string[] } = {}) {
-    const task = text.trim();
+    let task = text.trim();
     const attachments = opts.attachments ?? [];
     if (!task && !attachments.length) return;
     const files = attachments.length ? { attachments } : {};
@@ -193,6 +243,9 @@ export class Jarvis {
     this.ev.onPhase("thinking", task || "looking at the attached files");
     try {
       const where = whereLine();
+      // The project line rides on the next spoken message only.
+      const project = !opts.silent ? this.pendingProject : null;
+      if (project) task = `${task}\n${project}`.trim();
       if (this.sessionId) {
         // A spoken turn tells a conversation that started elsewhere (or before
         // the HUD knew) where he is now.
@@ -200,6 +253,7 @@ export class Jarvis {
         try {
           await post(`sessions/${this.sessionId}/events`, { task: moved ? `${task}\n${WHERE_TAG} ${where}` : task, ...files });
           if (moved) save(storageKey(this.profile, "where"), where);
+          if (project) this.pendingProject = null;
           return;
         } catch (e) {
           // A session that can no longer take messages: start afresh below.
@@ -219,6 +273,9 @@ export class Jarvis {
       });
       this.sessionId = created.session_id;
       save(storageKey(this.profile, "session"), this.sessionId);
+      if (project) this.pendingProject = null;
+      this.onNewSession?.(created.session_id);
+      this.onNewSession = null;
       save(storageKey(this.profile, "where"), where);
       await this.attach(false);
     } catch (e) {
@@ -356,17 +413,20 @@ export class Jarvis {
   private async answer(toolUseId: string, name: string, input: unknown) {
     if (!toolUseId || this.answered.has(toolUseId) || !this.sessionId) return;
     this.answered.add(toolUseId);
+    // The conversation that asked: a tool (project_continue) may switch away.
+    const asked = this.sessionId;
     const result = await runTool(name, input, {
       openPanel: (t) => this.ev.openPanel(t),
       showRoute: (r, w) => this.ev.showRoute(r, w),
       openProject: (n) => this.ev.openProject(n),
+      continueProject: (n) => this.ev.continueProject(n),
       session: this.sessionId,
       jobs: () => this.ev.jobs(),
       full: this.profile.full,
     });
     // He told this conversation himself; no need to tell it again.
     if (name === "set_location" && !result.is_error) save(storageKey(this.profile, "where"), whereLine());
-    await post(`sessions/${this.sessionId}/tool-results`, {
+    await post(`sessions/${asked}/tool-results`, {
       results: [{ custom_tool_use_id: toolUseId, content: result.content, ...(result.is_error ? { is_error: true } : {}) }],
     }).catch((e) => this.transcript.note(`tool result not delivered: ${String(e)}`, true));
   }

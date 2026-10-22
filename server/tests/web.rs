@@ -1496,6 +1496,40 @@ async fn projects_are_each_profiles_own() {
         .contains("no GitHub token"));
     let r = send(&h, bff(Method::GET, "/web/projects", Some(&powers), None)).await;
     assert_eq!(r.json()["local"], json!([]));
+    let stamp = format!("/web/projects/local/{id}/session");
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            &stamp,
+            Some(&powers),
+            Some(json!({"session_id": "sesn_2"})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "not his to re-stamp");
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            &stamp,
+            Some(&walker),
+            Some(json!({"session_id": "../x"})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            &stamp,
+            Some(&walker),
+            Some(json!({"session_id": "sesn_2"})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
     let path = format!("/web/projects/local/{id}/remove");
     let r = send(&h, bff(Method::POST, &path, Some(&powers), Some(json!({})))).await;
     assert_eq!(r.status, StatusCode::NOT_FOUND, "not his");

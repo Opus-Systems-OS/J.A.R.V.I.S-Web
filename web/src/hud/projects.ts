@@ -11,7 +11,7 @@ import { ApiError, get, web, webGet } from "../api";
 import { html, setHtml } from "../html";
 import { link } from "./brief";
 import { ago } from "./fleet";
-import { modelKind, showModel } from "./model3d";
+import { kindOf, renderFile, type FileKind } from "./fileview";
 import type { OutputFile } from "./transcript";
 
 export interface Repo {
@@ -61,6 +61,33 @@ export const listProjects = () => webGet<Listing>("projects");
 export interface ProjectsHost {
   /** The Jarvis conversation now: a new Jarvis project belongs to it. */
   sessionId(): string | null;
+  /** Back into a Jarvis project's conversation (the HUD tab). */
+  continueProject(p: LocalProject): Promise<void>;
+}
+
+/** A file a project shows: where to read it and where to download it. */
+interface ProjectFile {
+  path: string;
+  size: number;
+  url: string;
+  load(): Promise<ArrayBuffer>;
+}
+
+const kb = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
+
+/** The subfolders and files directly in `dir` ("" = the root). */
+export function folderView<T extends { path: string }>(files: T[], dir: string): { folders: string[]; here: T[] } {
+  const prefix = dir ? `${dir}/` : "";
+  const folders = new Set<string>();
+  const here: T[] = [];
+  for (const f of files) {
+    if (!f.path.startsWith(prefix)) continue;
+    const rest = f.path.slice(prefix.length);
+    const slash = rest.indexOf("/");
+    if (slash < 0) here.push(f);
+    else folders.add(rest.slice(0, slash));
+  }
+  return { folders: [...folders].sort((a, b) => a.localeCompare(b)), here: here.sort((a, b) => a.path.localeCompare(b.path)) };
 }
 
 const el = <T extends HTMLElement>(tag: string, cls?: string, text?: string): T => {
@@ -227,43 +254,50 @@ export class ProjectsView {
     body.append(dl);
   }
 
-  /** A stage for the viewer and a list of models to put on it. */
-  private modelsBlock(body: HTMLElement, models: { label: string; kind: NonNullable<ReturnType<typeof modelKind>>; load: () => Promise<ArrayBuffer> }[]) {
-    body.append(el("p", "sec-label", `3D models · ${models.length}`));
-    if (!models.length) {
-      body.append(el("p", "panel-empty", "No .glb, .gltf or .stl files here"));
+  /** Files as groups (models, docs, code, other) and a viewer below; the
+   * first model, else the first doc, opens by itself. */
+  private filesBlock(body: HTMLElement, files: ProjectFile[], heading: string) {
+    body.append(el("p", "sec-label", `${heading} · ${files.length}`));
+    if (!files.length) {
+      body.append(el("p", "panel-empty", "No files yet"));
       return;
     }
-    const stage = el("div", "projects-stage");
-    const status = el("p", "intel-hint");
-    const list = el("ul", "projects-models");
-    const open = async (i: number) => {
-      const m = models[i];
-      list.querySelectorAll("button").forEach((b, j) => b.setAttribute("aria-pressed", String(i === j)));
+    const viewer = el("div", "projects-viewer");
+    const groups = el("div", "projects-files");
+    const buttons: HTMLButtonElement[] = [];
+    const open = async (f: ProjectFile, b: HTMLButtonElement) => {
+      buttons.forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
       this.stopViewer();
-      stage.replaceChildren();
-      status.textContent = `Loading ${m.label}…`;
       try {
-        const data = await m.load();
-        const close = await showModel(stage, data, m.kind);
-        // The dossier may have moved on while it loaded.
-        if (!stage.isConnected) return close();
-        this.closeViewer = close;
-        status.textContent = `${m.label} · drag to turn, scroll to zoom`;
+        const close = await renderFile(viewer, f.path, f.size, f.load, f.url);
+        if (close) {
+          if (viewer.isConnected) this.closeViewer = close;
+          else close();
+        }
       } catch (e) {
-        status.textContent = `Couldn't open ${m.label}: ${e instanceof Error ? e.message : String(e)}`;
+        viewer.replaceChildren(el("p", "panel-empty", `Couldn't open ${f.path}: ${e instanceof Error ? e.message : String(e)}`));
       }
     };
-    models.forEach((m, i) => {
-      const li = el("li");
-      const b = el<HTMLButtonElement>("button", "btn-ghost btn-small", m.label);
-      b.type = "button";
-      b.onclick = () => void open(i);
-      li.append(b);
-      list.append(li);
-    });
-    body.append(stage, status, list);
-    void open(0);
+    const label: Record<FileKind, string> = { model: "3D models", doc: "Docs", code: "Code", other: "Other" };
+    for (const kind of ["model", "doc", "code", "other"] as FileKind[]) {
+      const these = files.filter((f) => kindOf(f.path) === kind);
+      if (!these.length) continue;
+      groups.append(el("p", "projects-kind", `${label[kind]} · ${these.length}`));
+      const ul = el("ul", "projects-models");
+      for (const f of these) {
+        const li = el("li");
+        const b = el<HTMLButtonElement>("button", "btn-ghost btn-small", f.path);
+        b.type = "button";
+        b.onclick = () => void open(f, b);
+        buttons.push(b);
+        li.append(b);
+        ul.append(li);
+      }
+      groups.append(ul);
+    }
+    body.append(groups, viewer);
+    const first = files.find((f) => kindOf(f.path) === "model") ?? files.find((f) => kindOf(f.path) === "doc");
+    if (first) void open(first, buttons[files.indexOf(first)] ?? buttons[0]);
   }
 
   private async renderRepo(r: Repo) {
@@ -279,45 +313,120 @@ export class ProjectsView {
     const p = el("p", "intel-listen");
     p.append(link(r.html_url, "Open on GitHub"));
     body.append(p);
-    const base = `projects/github/${encodeURIComponent(r.owner)}/${encodeURIComponent(r.name)}`;
-    let files: { path: string; size: number }[];
+    const base = `/web/projects/github/${encodeURIComponent(r.owner)}/${encodeURIComponent(r.name)}`;
+    let tree: { files: { path: string; size: number }[]; truncated: boolean };
     try {
-      files = await webGet<{ path: string; size: number }[]>(`${base}/models`);
+      tree = await webGet(`${base.slice(5)}/tree`);
     } catch (e) {
-      if (this.selected === key) body.append(el("p", "panel-empty", `Models unavailable: ${e instanceof Error ? e.message : String(e)}`));
+      if (this.selected === key) body.append(el("p", "panel-empty", `Files unavailable: ${e instanceof Error ? e.message : String(e)}`));
       return;
     }
     if (this.selected !== key) return;
-    this.modelsBlock(
-      body,
-      files.flatMap((f) => {
-        const kind = modelKind(f.path);
-        return kind
-          ? [{ label: f.path, kind, load: () => fetchBytes(`/web/${base}/file?path=${encodeURIComponent(f.path)}`) }]
-          : [];
-      }),
-    );
+    const file = (path: string, size: number): ProjectFile => {
+      const url = `${base}/file?path=${encodeURIComponent(path)}`;
+      return { path, size, url, load: () => fetchBytes(url) };
+    };
+    const readme = tree.files.find((f) => /^readme\.(md|markdown)$/i.test(f.path));
+    if (readme) {
+      const box = el("div", "projects-readme");
+      body.append(el("p", "sec-label", "README"), box);
+      void renderFile(box, readme.path, readme.size, file(readme.path, readme.size).load, file(readme.path, readme.size).url).catch(() =>
+        box.replaceChildren(el("p", "panel-empty", "README unavailable")),
+      );
+    }
+    const models = tree.files.filter((f) => kindOf(f.path) === "model").slice(0, 50);
+    if (models.length) this.filesBlock(body, models.map((f) => file(f.path, f.size)), "3D models");
+    this.browser(body, tree, file);
+  }
+
+  /** A repo's files, folder by folder, with a path filter. */
+  private browser(body: HTMLElement, tree: { files: { path: string; size: number }[]; truncated: boolean }, file: (path: string, size: number) => ProjectFile) {
+    body.append(el("p", "sec-label", `Files · ${tree.files.length}${tree.truncated ? " (the first 5,000)" : ""}`));
+    const crumbs = el("div", "projects-crumbs");
+    const filter = el<HTMLInputElement>("input", "projects-filter");
+    filter.placeholder = "Find a file by path";
+    filter.setAttribute("aria-label", "Find a file by path");
+    const list = el("ul", "rows projects-tree");
+    const viewer = el("div", "projects-viewer");
+    let dir = "";
+    const show = (f: { path: string; size: number }) => {
+      this.stopViewer();
+      const pf = file(f.path, f.size);
+      void renderFile(viewer, f.path, f.size, pf.load, pf.url)
+        .then((close) => {
+          if (close) this.closeViewer = close;
+        })
+        .catch((e) => viewer.replaceChildren(el("p", "panel-empty", `Couldn't open ${f.path}: ${e instanceof Error ? e.message : String(e)}`)));
+    };
+    const row = (name: string, detail: string, go: () => void) => {
+      const li = el<HTMLLIElement>("li", "row");
+      li.tabIndex = 0;
+      li.append(el("span", "row-name", name), el("span", "row-detail", detail));
+      li.onclick = go;
+      li.onkeydown = (e) => {
+        if (e.key === "Enter") go();
+      };
+      return li;
+    };
+    const render = () => {
+      const q = filter.value.trim().toLowerCase();
+      crumbs.replaceChildren();
+      if (q) {
+        const hits = tree.files.filter((f) => f.path.toLowerCase().includes(q)).slice(0, 200);
+        list.replaceChildren(...(hits.length ? hits.map((f) => row(f.path, kb(f.size), () => show(f))) : [el("li", "panel-empty", "No match")]));
+        return;
+      }
+      const parts = dir ? dir.split("/") : [];
+      const crumb = (text: string, to: string) => {
+        const b = el<HTMLButtonElement>("button", "btn-ghost btn-small", text);
+        b.type = "button";
+        b.onclick = () => {
+          dir = to;
+          render();
+        };
+        return b;
+      };
+      crumbs.append(crumb("/", ""));
+      parts.forEach((p, i) => crumbs.append(crumb(p, parts.slice(0, i + 1).join("/"))));
+      const { folders, here } = folderView(tree.files, dir);
+      list.replaceChildren(
+        ...folders.map((f) =>
+          row(`${f}/`, "folder", () => {
+            dir = dir ? `${dir}/${f}` : f;
+            render();
+          }),
+        ),
+        ...here.map((f) => row(f.path.split("/").pop()!, kb(f.size), () => show(f))),
+      );
+    };
+    filter.oninput = render;
+    render();
+    body.append(filter, crumbs, list, viewer);
   }
 
   private async renderLocal(p: LocalProject) {
     const key = localKey(p);
     const body = this.detail(p.name, "Jarvis project");
+    const go = el<HTMLButtonElement>("button", "btn-primary btn-small", "Continue in this project");
+    go.type = "button";
+    go.onclick = () => void this.host.continueProject(p);
+    body.append(go);
     this.facts(body, [
       ["About", p.description || "—"],
       ["Started", ago(new Date(p.created_at * 1000).toISOString())],
-      ["Conversation", p.session_id ?? "—"],
+      ["Conversation", p.session_id ?? "not started: Continue starts one"],
     ]);
     const remove = el<HTMLButtonElement>("button", "btn-ghost btn-small", "Remove project");
     remove.type = "button";
     remove.onclick = async () => {
-      if (!window.confirm(`Remove ${p.name}? Its outputs stay in the conversation.`)) return;
+      if (!window.confirm(`Remove ${p.name}? Its files stay in the conversation.`)) return;
       await web(`projects/local/${p.id}/remove`, {}).catch(() => undefined);
       this.selected = null;
       this.detail("Select a project", "");
       await this.reload();
     };
     if (!p.session_id) {
-      body.append(el("p", "panel-empty", "No conversation yet: models Jarvis makes for it will show here."), remove);
+      body.append(remove);
       return;
     }
     let files: OutputFile[] = [];
@@ -328,14 +437,15 @@ export class ProjectsView {
     }
     if (this.selected !== key) return;
     const session = p.session_id;
-    this.modelsBlock(
+    this.filesBlock(
       body,
-      files.flatMap((f) => {
-        const kind = f.downloadable ? modelKind(f.filename) : null;
-        return kind
-          ? [{ label: f.filename, kind, load: () => fetchBytes(`/bff/v1/files/${encodeURIComponent(f.id)}/content?session=${encodeURIComponent(session)}`) }]
-          : [];
-      }),
+      files
+        .filter((f) => f.downloadable)
+        .map((f) => {
+          const url = `/bff/v1/files/${encodeURIComponent(f.id)}/content?session=${encodeURIComponent(session)}`;
+          return { path: f.filename, size: f.size_bytes ?? 0, url, load: () => fetchBytes(url) };
+        }),
+      "Files",
     );
     body.append(remove);
   }

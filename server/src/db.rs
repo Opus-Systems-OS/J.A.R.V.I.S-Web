@@ -553,6 +553,17 @@ impl Db {
         })
     }
 
+    /// Tie `profile`'s project to a (new) conversation.
+    pub fn set_project_session(&self, profile: &str, id: i64, session: &str) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE projects SET session_id = ?3 WHERE id = ?1 AND profile = ?2",
+                params![id, profile, session],
+            )
+            .map(|n| n == 1)
+        })
+    }
+
     pub fn remove_project(&self, profile: &str, id: i64) -> Result<bool> {
         self.with(|c| {
             c.execute(
@@ -737,6 +748,12 @@ mod tests {
         );
         assert!(db.projects("powers").unwrap().is_empty());
         assert!(!db.remove_project("powers", p.id).unwrap(), "not his");
+        assert!(!db.set_project_session("powers", p.id, "sesn_2").unwrap());
+        assert!(db.set_project_session("walker", p.id, "sesn_2").unwrap());
+        assert_eq!(
+            db.projects("walker").unwrap()[1].session_id.as_deref(),
+            Some("sesn_2")
+        );
         assert!(db.remove_project("walker", p.id).unwrap());
         assert_eq!(db.projects("walker").unwrap().len(), 1);
     }

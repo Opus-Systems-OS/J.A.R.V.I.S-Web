@@ -246,6 +246,70 @@
   border-color: var(--accent);
 }
 
+.projects-kind {
+  margin: 0.4rem 0 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.projects-viewer,
+.projects-readme {
+  margin: 0.5rem 0 1rem;
+}
+
+.projects-readme {
+  max-height: 40vh;
+  overflow: auto;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--line);
+}
+
+.projects-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0.3rem 0;
+}
+
+.projects-tree {
+  max-height: 34vh;
+  overflow: auto;
+}
+
+.projects-tree .row,
+.projects-files .btn-ghost {
+  cursor: pointer;
+}
+
+.code-view {
+  margin: 0 0 0.5rem;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 0.5rem 0;
+  border: 1px solid var(--line);
+  background: rgba(14, 6, 2, 0.75);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  tab-size: 2;
+}
+
+.code-line {
+  display: block;
+  white-space: pre;
+  padding-right: 1rem;
+}
+
+.code-n {
+  display: inline-block;
+  padding: 0 0.8rem 0 0.6rem;
+  color: var(--text-faint);
+  user-select: none;
+}
+
 .projects-new {
   display: flex;
   flex-direction: column;
