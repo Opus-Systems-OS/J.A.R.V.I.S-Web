@@ -912,11 +912,8 @@ async fn mr_powers_goes_upstream_with_his_own_key_and_only_to_his_areas() {
     }
     let before = h.seen.lock().unwrap().len();
     for path in [
-        "/bff/v1/ops",
         "/bff/v1/sources",
         "/bff/v1/briefing",
-        "/bff/v1/clients",
-        "/bff/v1/rig",
         "/bff/v1/voice/credit",
     ] {
         let r = send(&h, bff(Method::GET, path, Some(&powers), None)).await;
@@ -927,6 +924,13 @@ async fn mr_powers_goes_upstream_with_his_own_key_and_only_to_his_areas() {
         h.seen.lock().unwrap().len(),
         before,
         "none of it left the box"
+    );
+    // Systems: ops (with his key's own `ops:read`), the rig and clients.
+    let r = send(&h, bff(Method::GET, "/bff/v1/ops", Some(&powers), None)).await;
+    assert_ne!(r.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        h.seen.lock().unwrap().last().unwrap().2,
+        format!("Bearer {POWERS_KEY}")
     );
     let r = send(&h, bff(Method::GET, "/web/credits", Some(&powers), None)).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
@@ -1214,7 +1218,7 @@ async fn the_canary_passphrase_and_the_honey_field_ban() {
 }
 
 #[tokio::test]
-async fn the_owner_sees_and_lifts_bans_and_nobody_else_can() {
+async fn everyone_sees_bans_and_only_the_owner_lifts_them() {
     let h = harness().await;
     send(&h, from("/.env", "198.51.100.50")).await;
     let walker = unlock(&h).await;
@@ -1238,7 +1242,7 @@ async fn the_owner_sees_and_lifts_bans_and_nobody_else_can() {
         send(&h, bff(Method::GET, "/web/security", Some(&powers), None))
             .await
             .status,
-        StatusCode::FORBIDDEN
+        StatusCode::OK
     );
     assert_eq!(send(&h, unban(&powers)).await.status, StatusCode::FORBIDDEN);
     assert!(h.db.is_banned("198.51.100.50").unwrap());

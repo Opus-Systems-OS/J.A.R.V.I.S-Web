@@ -21,11 +21,11 @@ export interface ToolDef {
 
 /** The HUD's tabs: the owner's, and everyone else's (no Systems). */
 export const TABS_FULL = ["HUD", "Fleet", "Intel", "Reverse", "Systems", "Usage", "Terminal"];
-export const TABS_LIMITED = ["HUD", "Fleet", "Intel", "Reverse", "Usage", "Terminal"];
+export const TABS_LIMITED = ["HUD", "Fleet", "Intel", "Reverse", "Systems", "Usage", "Terminal"];
 export const tabsFor = (full: boolean) => (full ? TABS_FULL : TABS_LIMITED);
 
 /** The owner's alone: the services, his day, the jobs he dispatched. */
-const OWNER_ONLY = new Set(["opus_status", "fleet_jobs", "briefing"]);
+const OWNER_ONLY = new Set(["fleet_jobs", "briefing"]);
 
 const openPanelTool = (tabs: string[]): ToolDef => ({
   type: "custom",

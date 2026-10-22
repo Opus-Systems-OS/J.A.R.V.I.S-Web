@@ -125,7 +125,11 @@ export class SystemsView {
   private timer: number | undefined;
   private clients: Client[] = [];
 
-  constructor(private readonly root: HTMLElement) {
+  constructor(
+    private readonly root: HTMLElement,
+    /** The owner's profile: may lift bans. */
+    private readonly canUnban = true,
+  ) {
     setHtml(root, html`
       <div class="systems">
         <section class="panel systems-map">
@@ -287,6 +291,7 @@ export class SystemsView {
         ...sec.bans.map((b) => {
           const li = row("down", b.ip, `${b.reason} · ${b.path} · ${when(b.at)}`, `${b.reason}: ${b.path}`);
           li.classList.add("sec-ban");
+          if (!this.canUnban) return li;
           const unban = document.createElement("button");
           unban.className = "btn-ghost sec-unban";
           unban.textContent = "Unban";
