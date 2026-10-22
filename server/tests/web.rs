@@ -1632,4 +1632,33 @@ async fn projects_are_each_profiles_own() {
     )
     .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    // Writes and moves outside the repo are refused before GitHub is asked.
+    for (path, body) in [
+        ("write", json!({"path": "../etc/passwd", "content": "x"})),
+        ("write", json!({"path": ".git/config", "content": "x"})),
+        ("move", json!({"from": "spec.md", "to": "/spec.md"})),
+        ("move", json!({"from": "spec.md", "to": "spec.md"})),
+    ] {
+        let url = format!(
+            "/web/projects/github/{}/J.A.R.V.I.S-Web/{path}",
+            "Opus-Systems-OS"
+        );
+        let r = send(
+            &h,
+            bff(Method::POST, &url, Some(&walker), Some(body.clone())),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    let r = send(
+        &h,
+        bff(
+            Method::POST,
+            "/web/projects/github/Opus-Systems-OS/J.A.R.V.I.S-Web/write",
+            None,
+            Some(json!({"path": "spec.md", "content": "x"})),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
 }

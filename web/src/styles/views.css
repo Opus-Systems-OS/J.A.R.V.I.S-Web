@@ -901,3 +901,8 @@
     padding: 16px;
   }
 }
+
+.projects-owned summary {
+  cursor: pointer;
+  padding: 0.35rem 0;
+}

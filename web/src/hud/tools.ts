@@ -3,14 +3,15 @@
 // clients' sessions never get them). Each reads through /bff, so Jarvis can
 // see exactly what this page can — and nothing it can't. All read-only
 // except `open_panel`, which only moves the HUD, `set_location`, which only
-// changes where this browser thinks he is, and the reminders.
+// changes where this browser thinks he is, the reminders, and writing or
+// moving a repo's files, which wait for him to tap Approve in the transcript.
 
 import { get, webGet } from "../api";
 import { compactBriefing, withLocalWeather, type Briefing } from "./briefing";
 import { compactJobs, type Job } from "./jobs";
 import * as location from "./location";
 import * as reminders from "./reminders";
-import { createProject, listProjects } from "./projects";
+import { createProject, found, listProjects, moveRepoFile, projectFiles, writeRepoFile } from "./projects";
 import { miles, minutes, shortName, type Route } from "./route";
 import * as watch from "./intel/watch";
 
@@ -184,6 +185,71 @@ const TOOLS: ToolDef[] = [
       type: "object",
       properties: { name: { type: "string" } },
       required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "project_files",
+    description:
+      "The files of one of his projects (a GitHub repo's default branch, or what a Jarvis project's conversation saved), " +
+      "with sizes. Use it to see which files belong to which project before reading or fixing them.",
+    input_schema: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "Its name, as projects_list gives it" },
+        filter: { type: "string", description: "Only paths containing this, e.g. spec" },
+      },
+      required: ["project"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "project_read_file",
+    description: "Read one text file of one of his projects (a path from project_files).",
+    input_schema: {
+      type: "object",
+      properties: { project: { type: "string" }, path: { type: "string" } },
+      required: ["project", "path"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "project_write_file",
+    description:
+      "Create or replace one text file in one of his GitHub repos, as one commit on its default branch. He sees the whole " +
+      "file and must tap Approve first; say what you're changing and why before calling it. Read the file first when it " +
+      "exists, and write the whole file. A Jarvis project's files are written in its own conversation instead " +
+      "(project_continue, then save to /mnt/session/outputs/).",
+    input_schema: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "The repo's name" },
+        path: { type: "string", description: "e.g. docs/spec.md" },
+        content: { type: "string", description: "The whole file" },
+        message: { type: "string", description: "The commit message" },
+      },
+      required: ["project", "path", "content"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "custom",
+    name: "project_move_file",
+    description:
+      "Move or rename one file within one of his GitHub repos, as one commit; never over a file already there. He must tap " +
+      "Approve first. To put a file in another project, read it, write it there, then tell him the original is still in place.",
+    input_schema: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "The repo's name" },
+        from: { type: "string" },
+        to: { type: "string" },
+        message: { type: "string", description: "The commit message" },
+      },
+      required: ["project", "from", "to"],
       additionalProperties: false,
     },
   },
@@ -389,6 +455,9 @@ function compactHere(): unknown {
   };
 }
 
+/** The most of a file handed to Jarvis at once. */
+const READ_MAX = 60_000;
+
 export async function runTool(
   name: string,
   input: unknown,
@@ -397,6 +466,8 @@ export async function runTool(
     showRoute(r: Route, where: "apple_maps" | "here"): void;
     openProject(name: string): Promise<boolean>;
     continueProject(name: string): Promise<"continued" | "repo" | "none">;
+    /** Shows a change in full; resolves once he taps Approve or Decline. */
+    approve(summary: string, detail: string): Promise<boolean>;
     /** The conversation the tool was called in. */
     session: string | null;
     jobs(): Job[];
@@ -545,6 +616,63 @@ export async function runTool(
         return (await ui.openProject(name))
           ? { content: `showing ${name} in the Projects tab` }
           : { content: `no project called ${name}: call projects_list`, is_error: true };
+      }
+      case "project_files":
+      case "project_read_file":
+      case "project_write_file":
+      case "project_move_file": {
+        const project = typeof args.project === "string" ? args.project.trim() : "";
+        const f = project ? found(await listProjects(), project) : null;
+        if (!f) return { content: `no project called ${project}: call projects_list`, is_error: true };
+        const str = (k: string) => (typeof args[k] === "string" ? (args[k] as string).trim() : "");
+        if (name === "project_files") {
+          const { files, truncated } = await projectFiles(f);
+          const q = str("filter").toLowerCase();
+          const hits = files.filter((x) => !q || x.path.toLowerCase().includes(q));
+          return {
+            content: JSON.stringify({
+              project: f.name,
+              kind: f.kind === "repo" ? "github" : "jarvis",
+              files: hits.slice(0, 300).map((x) => ({ path: x.path, size: x.size })),
+              more: hits.length > 300 || truncated ? "more files: narrow with filter" : undefined,
+              note: f.kind === "local" && !f.project.session_id ? "no conversation yet, so no files" : undefined,
+            }),
+          };
+        }
+        if (name === "project_read_file") {
+          const file = (await projectFiles(f)).files.find((x) => x.path === str("path"));
+          if (!file) return { content: `no file ${str("path")} in ${f.name}: call project_files`, is_error: true };
+          let text: string;
+          try {
+            text = new TextDecoder("utf-8", { fatal: true }).decode(await file.load());
+          } catch {
+            return { content: `${file.path} isn't text (a model or binary): it can't be read here`, is_error: true };
+          }
+          return { content: text.length > READ_MAX ? `${text.slice(0, READ_MAX)}\n[… cut at ${READ_MAX} characters]` : text };
+        }
+        if (f.kind !== "repo")
+          return {
+            content: `${f.name} is a Jarvis project: its files are written in its own conversation (project_continue, then save to /mnt/session/outputs/)`,
+            is_error: true,
+          };
+        const message = str("message") || undefined;
+        if (name === "project_write_file") {
+          const path = str("path");
+          const content = typeof args.content === "string" ? args.content : "";
+          if (!path) return { content: "need path and content", is_error: true };
+          const exists = (await projectFiles(f)).files.some((x) => x.path === path);
+          const ok = await ui.approve(`${exists ? "Replace" : "Create"} ${path} in ${f.name}?`, content);
+          if (!ok) return { content: "he declined: nothing was written; ask what he'd like changed" };
+          const r = await writeRepoFile(f.repo, path, content, message);
+          return { content: JSON.stringify({ written: r.path, project: f.name, commit: r.commit.slice(0, 7) }) };
+        }
+        const from = str("from");
+        const to = str("to");
+        if (!from || !to) return { content: "need from and to", is_error: true };
+        const ok = await ui.approve(`Move ${from} to ${to} in ${f.name}?`, `${from}\n→ ${to}`);
+        if (!ok) return { content: "he declined: nothing was moved" };
+        const r = await moveRepoFile(f.repo, from, to, message);
+        return { content: JSON.stringify({ moved: r.from, to: r.to, project: f.name, commit: r.commit.slice(0, 7) }) };
       }
       case "directions": {
         const to = typeof args.to === "string" ? args.to.trim() : "";

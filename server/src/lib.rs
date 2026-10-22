@@ -190,6 +190,14 @@ pub fn app(state: AppState) -> Router {
             "/web/projects/github/{owner}/{repo}/tree",
             get(projects::tree),
         )
+        .route(
+            "/web/projects/github/{owner}/{repo}/write",
+            post(projects::write_file),
+        )
+        .route(
+            "/web/projects/github/{owner}/{repo}/move",
+            post(projects::move_file),
+        )
         .route_layer(from_fn_with_state(state.clone(), auth::require_session));
 
     let api = Router::new()

@@ -343,6 +343,16 @@ button.orb:focus-visible {
   list-style: none;
 }
 
+.entry-approval {
+  color: var(--text);
+}
+
+.entry-approval-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+
 .entry-tool pre {
   margin: 0.35rem 0 0;
   padding: 0.5rem;

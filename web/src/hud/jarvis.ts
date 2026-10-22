@@ -420,6 +420,7 @@ export class Jarvis {
       showRoute: (r, w) => this.ev.showRoute(r, w),
       openProject: (n) => this.ev.openProject(n),
       continueProject: (n) => this.ev.continueProject(n),
+      approve: (summary, detail) => this.transcript.approval(summary, detail),
       session: this.sessionId,
       jobs: () => this.ev.jobs(),
       full: this.profile.full,
