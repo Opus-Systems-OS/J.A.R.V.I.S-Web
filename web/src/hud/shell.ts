@@ -123,6 +123,7 @@ const template = (full: boolean) => html`
 
 const MIC_LABEL: Record<ListenerState, string> = {
   off: "Mic off",
+  waiting: "Allow the mic, then tap anywhere",
   passive: "Listening for “Jarvis”",
   awake: "Listening",
   paused: "Speaking",

@@ -37,7 +37,8 @@ type RecognitionEvent = {
   results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
 };
 
-export type ListenerState = "off" | "passive" | "awake" | "paused" | "unsupported" | "denied" | "unavailable";
+/** `waiting`: cloud ears asked for the mic but aren't hearing yet (the prompt, or a tap). */
+export type ListenerState = "off" | "waiting" | "passive" | "awake" | "paused" | "unsupported" | "denied" | "unavailable";
 
 export type Engine = "browser" | "cloud";
 
@@ -77,6 +78,12 @@ export const FOLLOW_UP_MS = 10_000;
  * speech without a wake word (seen live 2026-09-24).
  */
 export const ASSEMBLE_MS = 1_300;
+/**
+ * The longest a request stays open. In a room where talk never pauses
+ * (seen live 2026-10-22, Mr. Powers), the quiet that closes a request never
+ * comes; past this, it goes at the next phrase boundary instead.
+ */
+export const ASSEMBLE_MAX_MS = 15_000;
 /** The same request twice within this window is sent once. */
 const REPEAT_MS = 4_000;
 /** Consecutive failed starts (nothing heard) before giving up. */
@@ -102,6 +109,8 @@ export function stripWake(text: string): { woke: boolean; rest: string } {
 export class Listener {
   private rec: Recognition | null = null;
   private ears: CloudEars | null = null;
+  /** The cloud ears are actually receiving the mic. */
+  private earsUp = false;
   private wanted = false; // should be running (not paused, not off)
   private running = false;
   private followUpUntil = 0;
@@ -119,6 +128,7 @@ export class Listener {
   private failures = 0;
   /** A request being assembled: text so far, and when to send it. */
   private pending: string | null = null;
+  private pendingSince = 0;
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private lastSent = { text: "", at: 0 };
   /** Cloud ears hear speech right now (the text arrives after it ends). */
@@ -140,8 +150,13 @@ export class Listener {
     if (!CloudEars.supported()) return this.setState(Listener.supported() ? "unavailable" : "unsupported");
     this.ev.onEngine?.("cloud");
     this.wanted = true;
+    this.earsUp = false;
+    this.setState("waiting");
     this.ears = new CloudEars({
-      started: () => this.setState(this.awake() ? "awake" : "passive"),
+      started: () => {
+        this.earsUp = true;
+        if (this.state === "waiting") this.setState(this.awake() ? "awake" : "passive");
+      },
       hearing: (active) => {
         this.speaking = active;
         if (this.pending !== null) {
@@ -249,7 +264,7 @@ export class Listener {
     this.wanted = true;
     if (this.ears) {
       this.ears.resume();
-      this.setState(this.awake() ? "awake" : "passive");
+      this.setState(!this.earsUp ? "waiting" : this.awake() ? "awake" : "passive");
     }
     this.resume();
   }
@@ -263,7 +278,7 @@ export class Listener {
       this.ears?.resume();
       this.resume();
     }
-    this.setState("awake");
+    this.setState(this.ears && !this.earsUp ? "waiting" : "awake");
   }
 
   stop() {
@@ -350,6 +365,7 @@ export class Listener {
     if (this.pending !== null) {
       // The next piece of a request already under way: no wake word needed.
       this.pending = `${this.pending} ${text.trim()}`;
+      if (Date.now() - this.pendingSince >= ASSEMBLE_MAX_MS) return this.flush();
       this.ev.onHearing(this.pending);
       this.scheduleFlush();
       return;
@@ -377,6 +393,7 @@ export class Listener {
     this.setState("awake");
     // Don't send yet: the sentence may continue after a pause.
     this.pending = rest;
+    this.pendingSince = Date.now();
     this.ev.onHearing(rest);
     this.scheduleFlush();
   }
