@@ -636,7 +636,8 @@
   margin-bottom: 0.9rem;
 }
 
-.rows .row.sec-ban {
+.rows .row.sec-ban,
+.rows .row.sec-key {
   grid-template-columns: 8px auto 1fr auto;
 }
 

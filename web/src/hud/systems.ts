@@ -353,7 +353,7 @@ export class SystemsView {
     list.replaceChildren(
       ...keys.map((k) => {
         const li = document.createElement("li");
-        li.className = "row";
+        li.className = "row sec-key";
         const n = document.createElement("span");
         n.className = "row-name";
         n.textContent = k.label;
