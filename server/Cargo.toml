@@ -41,6 +41,8 @@ roxmltree = "0.20"
 # Already in the tree (tower-http gzip); inflates GDELT's zipped exports.
 flate2 = "1"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+p256 = { version = "0.14.0", features = ["ecdsa", "pkcs8"] }
+base64 = "0.23.1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

@@ -99,6 +99,14 @@ CREATE TABLE IF NOT EXISTS notes (
   created_at  INTEGER NOT NULL,
   closed_at   INTEGER             -- done, or no longer wanted
 );
+-- A profile's passkeys: the second step of its unlock once it has one.
+CREATE TABLE IF NOT EXISTS passkeys (
+  id          TEXT PRIMARY KEY,   -- the credential id, base64url
+  profile     TEXT NOT NULL,
+  public_key  BLOB NOT NULL,      -- SPKI DER, P-256
+  label       TEXT NOT NULL,
+  created_at  INTEGER NOT NULL
+);
 -- The bait passphrase in the fake `.env`: made once, kept across restarts.
 CREATE TABLE IF NOT EXISTS honey (
   id      INTEGER PRIMARY KEY CHECK (id = 1),
@@ -324,6 +332,62 @@ impl Db {
     /// Lock every browser unlocked as `profile`. Returns how many.
     pub fn delete_profile_sessions(&self, profile: &str) -> Result<usize> {
         self.with(|c| c.execute("DELETE FROM web_sessions WHERE profile = ?1", [profile]))
+    }
+
+    // ---- passkeys ------------------------------------------------------------
+
+    pub fn add_passkey(
+        &self,
+        profile: &str,
+        id: &str,
+        public_key: &[u8],
+        label: &str,
+    ) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO passkeys (id, profile, public_key, label, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, profile, public_key, label, now()],
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// `(id, label, created_at)`, oldest first.
+    pub fn passkeys(&self, profile: &str) -> Result<Vec<(String, String, i64)>> {
+        self.with(|c| {
+            c.prepare(
+                "SELECT id, label, created_at FROM passkeys WHERE profile = ?1 ORDER BY created_at, id",
+            )?
+            .query_map([profile], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect()
+        })
+    }
+
+    pub fn passkey_key(&self, profile: &str, id: &str) -> Result<Option<Vec<u8>>> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT public_key FROM passkeys WHERE profile = ?1 AND id = ?2",
+                params![profile, id],
+                |r| r.get(0),
+            )
+            .optional()
+        })
+    }
+
+    pub fn remove_passkey(&self, profile: &str, id: &str) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM passkeys WHERE profile = ?1 AND id = ?2",
+                params![profile, id],
+            )
+            .map(|n| n > 0)
+        })
+    }
+
+    /// Every passkey of `profile`: the recovery for a lost device.
+    pub fn clear_passkeys(&self, profile: &str) -> Result<usize> {
+        self.with(|c| c.execute("DELETE FROM passkeys WHERE profile = ?1", [profile]))
     }
 
     pub fn delete_session(&self, token_sha256: &str) -> Result<()> {

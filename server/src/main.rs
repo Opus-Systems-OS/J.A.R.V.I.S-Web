@@ -26,6 +26,9 @@ enum Command {
     Bans,
     /// Lift the ban on an address.
     Unban { ip: String },
+    /// Remove every passkey of a profile (`walker`, `powers`): the way back
+    /// in after losing the device that held them.
+    PasskeysReset { profile: String },
 }
 
 #[tokio::main]
@@ -60,6 +63,11 @@ async fn run() -> error::Result<()> {
         Some(Command::Unban { ip }) => {
             let lifted = db::Db::open(&config::database_path())?.unban(&ip)?;
             println!("{}", if lifted { "unbanned" } else { "not banned" });
+            return Ok(());
+        }
+        Some(Command::PasskeysReset { profile }) => {
+            let n = db::Db::open(&config::database_path())?.clear_passkeys(&profile)?;
+            println!("removed {n} passkey(s) from {profile}");
             return Ok(());
         }
         Some(Command::Serve) | None => {}

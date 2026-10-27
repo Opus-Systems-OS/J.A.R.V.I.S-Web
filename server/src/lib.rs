@@ -21,6 +21,7 @@ pub mod intel;
 pub mod layers;
 pub mod local;
 pub mod mic;
+pub mod passkey;
 pub mod projects;
 pub mod reminders;
 pub mod request_id;
@@ -45,6 +46,7 @@ pub struct AppState {
     pub mic: std::sync::Arc<mic::Lease>,
     pub intel: std::sync::Arc<intel::Intel>,
     pub local: std::sync::Arc<local::Cache>,
+    pub challenges: std::sync::Arc<passkey::Challenges>,
 }
 
 impl AppState {
@@ -59,6 +61,7 @@ impl AppState {
             mic: std::sync::Arc::default(),
             intel: std::sync::Arc::default(),
             local: std::sync::Arc::default(),
+            challenges: std::sync::Arc::default(),
         })
     }
 }
@@ -151,6 +154,12 @@ pub fn app(state: AppState) -> Router {
         .route("/web/notes/{id}/close", post(reminders::close_note))
         .route("/web/visit", post(reminders::visit))
         .route("/web/sessions/revoke-all", post(auth::revoke_all))
+        .route(
+            "/web/passkeys",
+            get(passkey::list).post(passkey::finish_register),
+        )
+        .route("/web/passkeys/begin", post(passkey::begin_register))
+        .route("/web/passkeys/{id}/remove", post(passkey::remove))
         .route("/web/security", get(honey::get))
         .route("/web/security/unban", post(honey::unban))
         .route("/web/intel/feed", get(intel::feed))
@@ -202,6 +211,7 @@ pub fn app(state: AppState) -> Router {
 
     let api = Router::new()
         .route("/auth/login", post(auth::login))
+        .route("/auth/passkey", post(passkey::login))
         .route("/auth/profiles", get(auth::profiles))
         .route("/healthz", get(|| async { "ok" }))
         .merge(bff)
