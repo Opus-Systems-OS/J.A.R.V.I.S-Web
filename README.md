@@ -25,6 +25,12 @@ browser ──> jarvis-web (droplet) ──/bff, own osk_ key──> api.opustow
 - **Every load starts locked.** Each unlock posts the passphrase, and that
   click is also the user gesture that lets Jarvis use the mic and speaker.
 - **Brute force is bounded before hashing:** 5 failures per IP per 15 min,
+- **Passkeys are the second step.** Add one from Systems > Defenses (Face ID /
+  Touch ID via iCloud Keychain, or a security key); from then on that profile's
+  password only earns a challenge and the passkey (user verification required)
+  starts the session. Needs `PUBLIC_ORIGIN` to match the site (default
+  `https://jarvis.opustower.dev`). Locked out: `jarvis-web passkeys-reset walker`
+  on the droplet.
   30 per hour from everyone (Argon2id, constant-time verify).
 - **Markup only through `html`.** The CSP enforces Trusted Types
   (`require-trusted-types-for 'script'; trusted-types jarvis`): the page's

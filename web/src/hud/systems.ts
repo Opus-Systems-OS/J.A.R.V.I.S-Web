@@ -5,6 +5,7 @@
 // Windows), and running sessions. Nothing is inferred that isn't there.
 
 import { get, webGet, webSend } from "../api";
+import { addPasskey, listPasskeys, passkeysSupported, removePasskey, type PasskeyRow } from "../passkey";
 import { html, setHtml, type Html } from "../html";
 import { ago } from "./fleet";
 import { localZone } from "./location";
@@ -144,6 +145,9 @@ export class SystemsView {
           <section class="panel systems-security">
             <header class="panel-head"><span class="panel-title">Defenses</span><span class="panel-tag" id="sec-tag"></span></header>
             <div class="panel-body">
+              <p class="sec-label">Passkeys</p>
+              <ul class="rows" id="sec-keys"></ul>
+              <button type="button" class="btn-ghost" id="sec-addkey" hidden>Add a passkey on this device</button>
               <p class="sec-label">Banned</p>
               <ul class="rows" id="sec-bans"></ul>
               <p class="sec-label">Recent trap hits</p>
@@ -155,6 +159,7 @@ export class SystemsView {
   }
 
   show() {
+    void this.refreshPasskeys();
     void this.refresh();
     window.clearInterval(this.timer);
     this.timer = window.setInterval(() => void this.refresh(), 30_000);
@@ -314,6 +319,62 @@ export class SystemsView {
           row(h.banned ? "down" : "warn", h.path, `${h.ip} · ${when(h.at)}${h.banned ? "" : " · unlocked, not banned"}`, h.ua || "no user agent"),
         ),
       );
+  }
+
+  /** This profile's passkeys, with a button to make one on this device. */
+  private async refreshPasskeys() {
+    const list = this.$("#sec-keys");
+    const add = this.$("#sec-addkey") as HTMLButtonElement;
+    add.hidden = !passkeysSupported();
+    add.onclick = async () => {
+      add.disabled = true;
+      try {
+        await addPasskey(/iPhone|iPad/.test(navigator.userAgent) ? "iPhone" : "This device");
+      } catch (e) {
+        add.textContent = e instanceof DOMException ? "Cancelled — try again" : "Could not add a passkey";
+        return;
+      } finally {
+        add.disabled = false;
+      }
+      add.textContent = "Add a passkey on this device";
+      void this.refreshPasskeys();
+    };
+    let keys: PasskeyRow[];
+    try {
+      keys = await listPasskeys();
+    } catch {
+      setHtml(list, html`<li class="panel-empty">Unavailable</li>`);
+      return;
+    }
+    if (!keys.length) {
+      setHtml(list, html`<li class="panel-empty">None — the password alone unlocks</li>`);
+      return;
+    }
+    list.replaceChildren(
+      ...keys.map((k) => {
+        const li = document.createElement("li");
+        li.className = "row";
+        const n = document.createElement("span");
+        n.className = "row-name";
+        n.textContent = k.label;
+        const d = document.createElement("span");
+        d.className = "row-detail";
+        d.textContent = ago(new Date(k.created_at * 1000).toISOString());
+        const rm = document.createElement("button");
+        rm.className = "btn-ghost sec-unban";
+        rm.textContent = "Remove";
+        rm.onclick = async () => {
+          rm.disabled = true;
+          try {
+            await removePasskey(k.id);
+          } finally {
+            void this.refreshPasskeys();
+          }
+        };
+        li.append(n, d, rm);
+        return li;
+      }),
+    );
   }
 
   private $(sel: string) {

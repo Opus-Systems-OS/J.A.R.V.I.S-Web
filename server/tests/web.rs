@@ -232,6 +232,7 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> Harness {
         static_dir: Some(dir.0.clone()),
         session_hours: 12,
         session_idle_minutes: 120,
+        public_origin: "https://jarvis.example".into(),
         aisstream_key: None,
     };
     tweak(&mut config);
@@ -1661,4 +1662,185 @@ async fn projects_are_each_profiles_own() {
     )
     .await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+}
+
+// ---- passkeys ---------------------------------------------------------------
+
+mod passkeys {
+    use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+    use base64::Engine as _;
+    use p256::ecdsa::signature::Signer;
+    use p256::ecdsa::{Signature, SigningKey};
+    use p256::pkcs8::EncodePublicKey;
+    use sha2::{Digest, Sha256};
+
+    const ORIGIN: &str = "https://jarvis.example";
+
+    fn cd(kind: &str, challenge: &str) -> Vec<u8> {
+        json!({ "type": kind, "challenge": challenge, "origin": ORIGIN })
+            .to_string()
+            .into_bytes()
+    }
+
+    /// What the authenticator returns for `challenge` (UP + UV set).
+    fn assertion(sk: &SigningKey, id: &str, challenge: &str) -> Value {
+        let client_data = cd("webauthn.get", challenge);
+        let mut auth_data = Sha256::digest(b"jarvis.example").to_vec();
+        auth_data.extend_from_slice(&[0x05, 0, 0, 0, 1]);
+        let mut signed = auth_data.clone();
+        signed.extend_from_slice(&Sha256::digest(&client_data));
+        let sig: Signature = sk.sign(&signed);
+        json!({
+            "challenge": challenge,
+            "id": id,
+            "client_data_json": B64.encode(client_data),
+            "authenticator_data": B64.encode(auth_data),
+            "signature": B64.encode(sig.to_der().as_bytes()),
+        })
+    }
+
+    fn post(path: &str, ip: &str, body: Value) -> Request<Body> {
+        let mut r = bff(Method::POST, path, None, Some(body));
+        r.headers_mut()
+            .insert("x-forwarded-for", ip.parse().unwrap());
+        r
+    }
+
+    #[tokio::test]
+    async fn a_profile_with_a_passkey_needs_it_after_the_password() {
+        let h = harness().await;
+        let cookie = unlock(&h).await;
+
+        // Enrol: begin, then answer the challenge with the new key.
+        let sk = SigningKey::from_slice(&[3u8; 32]).unwrap();
+        let id = B64.encode([5u8; 32]);
+        let begin = send(
+            &h,
+            bff(
+                Method::POST,
+                "/web/passkeys/begin",
+                Some(&cookie),
+                Some(json!({})),
+            ),
+        )
+        .await;
+        assert_eq!(begin.status, StatusCode::OK);
+        let challenge = begin.json()["challenge"].as_str().unwrap().to_owned();
+        assert_eq!(begin.json()["rp_id"], "jarvis.example");
+        let finish = |challenge: &str| {
+            bff(
+                Method::POST,
+                "/web/passkeys",
+                Some(&cookie),
+                Some(json!({
+                    "challenge": challenge,
+                    "id": id,
+                    "client_data_json": B64.encode(cd("webauthn.create", challenge)),
+                    "public_key": B64.encode(sk.verifying_key().to_public_key_der().unwrap().as_bytes()),
+                    "label": "iPhone",
+                })),
+            )
+        };
+        assert_eq!(
+            send(&h, finish(&challenge)).await.status,
+            StatusCode::NO_CONTENT
+        );
+        // A challenge works once.
+        assert_eq!(
+            send(&h, finish(&challenge)).await.status,
+            StatusCode::BAD_REQUEST
+        );
+        let listed = send(&h, bff(Method::GET, "/web/passkeys", Some(&cookie), None)).await;
+        assert_eq!(listed.json()[0]["label"], "iPhone");
+
+        // The password alone now earns a challenge, not a cookie.
+        let r = send(&h, login_req(PASSWORD, "203.0.113.9")).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert!(r.headers.get(header::SET_COOKIE).is_none());
+        let step = r.json();
+        assert_eq!(step["second_factor"], "passkey");
+        assert_eq!(step["credentials"][0], id);
+        let challenge = step["challenge"].as_str().unwrap();
+
+        // The wrong key does not pass; its challenge is spent.
+        let other = SigningKey::from_slice(&[4u8; 32]).unwrap();
+        let r = send(
+            &h,
+            post(
+                "/auth/passkey",
+                "203.0.113.9",
+                assertion(&other, &id, challenge),
+            ),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+        let r = send(
+            &h,
+            post(
+                "/auth/passkey",
+                "203.0.113.9",
+                assertion(&sk, &id, challenge),
+            ),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+
+        // A fresh challenge, signed by the enrolled key, unlocks.
+        let step = send(&h, login_req(PASSWORD, "203.0.113.9")).await.json();
+        let challenge = step["challenge"].as_str().unwrap();
+        let r = send(
+            &h,
+            post(
+                "/auth/passkey",
+                "203.0.113.9",
+                assertion(&sk, &id, challenge),
+            ),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::NO_CONTENT);
+        let set = r.headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+        assert!(set.starts_with("__Host-jw="));
+
+        // Mr. Powers has none, so his password still opens it alone.
+        let r = send(&h, profile_login("powers", POWERS_PASSWORD, "203.0.113.10")).await;
+        assert_eq!(r.status, StatusCode::NO_CONTENT);
+
+        // Remove it and the password is enough again.
+        let gone = send(
+            &h,
+            bff(
+                Method::POST,
+                &format!("/web/passkeys/{id}/remove"),
+                Some(&cookie),
+                Some(json!({})),
+            ),
+        )
+        .await;
+        assert_eq!(gone.status, StatusCode::NO_CONTENT);
+        let r = send(&h, login_req(PASSWORD, "203.0.113.9")).await;
+        assert_eq!(r.status, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn passkey_routes_need_a_session_or_a_challenge() {
+        let h = harness().await;
+        let r = send(
+            &h,
+            bff(Method::POST, "/web/passkeys/begin", None, Some(json!({}))),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+        let sk = SigningKey::from_slice(&[3u8; 32]).unwrap();
+        let r = send(
+            &h,
+            post(
+                "/auth/passkey",
+                "203.0.113.9",
+                assertion(&sk, "AAAA", "never-issued"),
+            ),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    }
 }

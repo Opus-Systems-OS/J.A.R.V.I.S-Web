@@ -107,7 +107,7 @@ pub async fn me(Extension(p): Extension<Profile>) -> Json<Me> {
     })
 }
 
-fn sha256_hex(s: &str) -> String {
+pub(crate) fn sha256_hex(s: &str) -> String {
     crate::hex(&Sha256::digest(s.as_bytes()))
 }
 
@@ -137,7 +137,7 @@ fn cookie_token(headers: &HeaderMap) -> Option<String> {
         .filter(|t| t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-fn check_limits(state: &AppState, ip: &str) -> Result<()> {
+pub(crate) fn check_limits(state: &AppState, ip: &str) -> Result<()> {
     let now = crate::db::now();
     let (n, oldest) = state.db.failures_since(Some(ip), now - IP_WINDOW_SECS)?;
     if n >= IP_MAX_FAILURES {
@@ -202,14 +202,23 @@ pub async fn login(
         tracing::warn!(%ip, profile = %profile.id, "unlock failed");
         return Err(Error::Unauthorized);
     }
+    // A profile with a passkey is not in yet: the password only earns it a
+    // challenge, and the session starts when the passkey answers.
+    if !state.db.passkeys(&profile.id)?.is_empty() {
+        return crate::passkey::challenge_login(&state, &profile.id);
+    }
     state.db.clear_failures(&ip)?;
+    start_session(&state, &ip, &profile.id)
+}
 
+/// The session cookie for `profile`, as a 204.
+pub(crate) fn start_session(state: &AppState, ip: &str, profile: &str) -> Result<Response> {
     let token = crate::hex(&crate::random_bytes::<32>());
     let ttl = i64::from(state.config.session_hours) * 3600;
     state
         .db
-        .insert_session(&sha256_hex(&token), ttl, &ip, &profile.id)?;
-    tracing::info!(%ip, profile = %profile.id, "unlocked");
+        .insert_session(&sha256_hex(&token), ttl, ip, profile)?;
+    tracing::info!(%ip, %profile, "unlocked");
 
     let cookie =
         format!("{COOKIE}={token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={ttl}");

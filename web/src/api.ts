@@ -2,6 +2,8 @@
 // lock, `/bff/v1/*` for the Opus Systems OS API (the server adds the key).
 // Errors arrive in one envelope, ours or the API's alike.
 
+import type { PasskeyStep } from "./passkey";
+
 export interface ErrorEnvelope {
   type: string;
   message: string;
@@ -26,7 +28,7 @@ export class ApiError extends Error {
 /** Fired when any call comes back 401: the unlock expired or was revoked. */
 export const LOCKED_EVENT = "jarvis:locked";
 
-async function request(method: string, path: string, body?: unknown): Promise<Response> {
+export async function request(method: string, path: string, body?: unknown): Promise<Response> {
   const headers: Record<string, string> = { "x-jarvis": "1" };
   if (body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch(path, {
@@ -73,8 +75,10 @@ export async function profiles(): Promise<ProfileChoice[]> {
 }
 
 /** `fax_number` is the lock form's honey field: always empty from a person. */
-export async function unlock(profile: string, password: string, fax_number = ""): Promise<void> {
-  await request("POST", "/auth/login", { profile, password, fax_number });
+export async function unlock(profile: string, password: string, fax_number = ""): Promise<PasskeyStep | null> {
+  const res = await request("POST", "/auth/login", { profile, password, fax_number });
+  // 204 = in. 200 = the password was right and a passkey must finish it.
+  return res.status === 200 ? ((await res.json()) as PasskeyStep) : null;
 }
 
 export async function lock(): Promise<void> {

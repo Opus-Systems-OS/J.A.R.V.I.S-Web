@@ -5,6 +5,7 @@
 // then that profile's passphrase.
 
 import { ApiError, profiles, unlock, webGet, type Profile, type ProfileChoice } from "./api";
+import { signIn } from "./passkey";
 
 const OWNER: ProfileChoice = { id: "walker", name: "Mr. Walker" };
 
@@ -118,8 +119,12 @@ export function showLock(onUnlocked: (me: Profile) => void, onGesture?: () => vo
     root.classList.remove("denied");
     say("Verifying…");
     try {
-      await unlock(chosen.id, input.value, fax.value);
+      const step = await unlock(chosen.id, input.value, fax.value);
       input.value = "";
+      if (step) {
+        say("Use your passkey…");
+        await signIn(step);
+      }
       const me = await webGet<Profile>("me");
       say(`Welcome back, ${me.name}`);
       root.classList.add("granted");
@@ -133,6 +138,11 @@ export function showLock(onUnlocked: (me: Profile) => void, onGesture?: () => vo
       // Restart the shake animation even on repeated failures.
       void root.offsetWidth;
       root.classList.add("denied");
+      if (e instanceof DOMException) {
+        say("Passkey cancelled — enter the passphrase to try again", true);
+        submit.disabled = false;
+        return;
+      }
       if (e instanceof ApiError && e.status === 429) {
         holdOff(e.retryAfter ?? 60);
         return;

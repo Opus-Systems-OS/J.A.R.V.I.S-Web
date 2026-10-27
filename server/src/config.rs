@@ -54,6 +54,10 @@ pub struct Config {
     pub session_hours: u32,
     /// An unlocked session nobody has used for this long locks.
     pub session_idle_minutes: u32,
+    /// Where the page is served from, for passkeys: the browser binds each
+    /// to this origin's host. `https://jarvis.opustower.dev` unless
+    /// `PUBLIC_ORIGIN` says otherwise (`http://localhost:8200` for dev).
+    pub public_origin: String,
     /// AISStream key for the Intel ship layer; without it the layer says so.
     pub aisstream_key: Option<SecretString>,
 }
@@ -208,6 +212,10 @@ impl Config {
             static_dir: optional("STATIC_DIR").map(PathBuf::from),
             session_hours: number("SESSION_HOURS", 12)?,
             session_idle_minutes: number("SESSION_IDLE_MINUTES", 120)?,
+            public_origin: optional("PUBLIC_ORIGIN")
+                .unwrap_or_else(|| "https://jarvis.opustower.dev".to_owned())
+                .trim_end_matches('/')
+                .to_owned(),
             aisstream_key: api_key("AISSTREAM_API_KEY")?,
         })
     }
