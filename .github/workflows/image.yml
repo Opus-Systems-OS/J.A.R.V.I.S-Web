@@ -7,6 +7,10 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Weekly, so an advisory published against an unchanged lockfile still
+  # fails a run (the build job skips it: only a push or a manual run ships).
+  schedule:
+    - cron: "17 6 * * 1"
 
 # Actions are pinned to commit SHAs (tag in the comment): a moved tag can't
 # swap code into a job. Only the job that pushes the image may write packages.
@@ -56,7 +60,7 @@ jobs:
 
   build:
     needs: [server, web]
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read

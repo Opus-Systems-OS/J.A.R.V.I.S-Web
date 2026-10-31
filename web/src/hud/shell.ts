@@ -9,7 +9,7 @@ import { html, setHtml, type Html } from "../html";
 import { CreditWatch, creditLine, dollars, fishDollars, level, type Credits } from "./credits";
 import { ago, FleetView } from "./fleet";
 import { greeting } from "./greeting";
-import { here, localZone, locateDevice, locateNamed, onChange as onWhereChange, placeName, type DeviceResult } from "./location";
+import { here, localZone, locateDevice, locateNamed, onChange as onWhereChange, placeName, setHere, type DeviceResult } from "./location";
 import { Jarvis, MODELS, type Phase } from "./jarvis";
 import { Listener, type Engine, type ListenerState } from "./listener";
 import { MicLease } from "./micLease";
@@ -20,6 +20,7 @@ import { TerminalView, terminalTask } from "./terminal";
 import { compactOps, tabsFor } from "./tools";
 import { Attachments } from "./attach";
 import { ReverseView } from "./reverse/view";
+import { forgetAll as forgetReports } from "./reverse/model";
 import { agentName, JobWatch, type Job } from "./jobs";
 import { WatchAlerts } from "./intel/watch";
 import { ReminderWatch } from "./reminders";
@@ -508,12 +509,20 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
   };
   window.addEventListener("keydown", onKey);
 
+  // Where he is and his reports aren't tied to a profile in this browser:
+  // a deliberate lock leaves neither for whoever unlocks next.
+  const forgetHere = () => {
+    setHere(null);
+    forgetReports();
+  };
   $<HTMLButtonElement>("#hud-lock").onclick = async () => {
     await lock();
+    forgetHere();
     onLocked();
   };
   $<HTMLButtonElement>("#hud-lock-all").onclick = async () => {
     await lockEverywhere();
+    forgetHere();
     onLocked();
   };
 

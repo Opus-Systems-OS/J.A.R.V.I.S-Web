@@ -88,7 +88,7 @@ fn clip(s: &str) -> String {
 
 /// Whether `ip` can be banned at all: only a public address names one
 /// client. Anything else may stand for many (see the module docs).
-fn bannable(ip: &str) -> bool {
+pub(crate) fn single_client(ip: &str) -> bool {
     use std::net::IpAddr;
     match ip.parse::<IpAddr>() {
         Ok(IpAddr::V4(v4)) => {
@@ -114,7 +114,7 @@ fn bannable(ip: &str) -> bool {
 /// Ban `ip` for `reason`. Returns whether it was banned (an unreadable
 /// address is not).
 pub fn ban(state: &AppState, ip: &str, reason: &str, path: &str) -> Result<bool> {
-    if !bannable(ip) {
+    if !single_client(ip) {
         tracing::warn!(honeypot = true, %ip, reason, path, "honeypot tripped; address unknown, not banned");
         return Ok(false);
     }
@@ -140,7 +140,7 @@ pub async fn guard(State(state): State<AppState>, req: Request, next: Next) -> R
     let trap = is_trap(&path);
     let ip = client_ip(req.headers());
     // A cookie lookup only when it could matter.
-    let banned = !trap && bannable(&ip) && state.db.is_banned(&ip)?;
+    let banned = !trap && single_client(&ip) && state.db.is_banned(&ip)?;
     if !trap && !banned {
         return Ok(next.run(req).await);
     }
@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn only_a_public_address_can_be_banned() {
         for ip in ["198.51.100.7", "67.127.41.1", "2604:a880:400:d1::1"] {
-            assert!(bannable(ip), "{ip}");
+            assert!(single_client(ip), "{ip}");
         }
         for ip in [
             "unknown",
@@ -278,7 +278,7 @@ mod tests {
             "fd7a:115c:a1e0::1",
             "fe80::1",
         ] {
-            assert!(!bannable(ip), "{ip}");
+            assert!(!single_client(ip), "{ip}");
         }
     }
 
