@@ -530,3 +530,26 @@ button.orb:focus-visible {
     height: 40vh;
   }
 }
+
+/* ---- 3D mode: the WebGL hologram stands in for the SVG ---------------------- */
+
+button.orb.orb-3d {
+  position: relative;
+  filter: none; /* the hologram brings its own bloom */
+}
+/* Oversized so the glow and outer ticks aren't clipped; clicks still land on the orb. */
+.orb-gl {
+  position: absolute;
+  inset: -18%;
+  pointer-events: none;
+}
+.orb-3d svg {
+  display: none;
+}
+.orb-mode {
+  margin-top: 0.6rem;
+}
+.orb-mode[aria-pressed="true"] {
+  color: var(--accent-3);
+  border-color: var(--line-strong);
+}
