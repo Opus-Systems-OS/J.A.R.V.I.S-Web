@@ -27,7 +27,7 @@ enum Command {
     /// Lift the ban on an address.
     Unban { ip: String },
     /// Remove every passkey of a profile (`walker`, `powers`): the way back
-    /// in after losing the device that held them.
+    /// in after losing the device that held them. Its sessions end too.
     PasskeysReset { profile: String },
 }
 
@@ -66,8 +66,11 @@ async fn run() -> error::Result<()> {
             return Ok(());
         }
         Some(Command::PasskeysReset { profile }) => {
-            let n = db::Db::open(&config::database_path())?.clear_passkeys(&profile)?;
-            println!("removed {n} passkey(s) from {profile}");
+            // A lost or stolen passkey is why this runs: lock out its sessions too.
+            let db = db::Db::open(&config::database_path())?;
+            let n = db.clear_passkeys(&profile)?;
+            let s = db.delete_profile_sessions(&profile)?;
+            println!("removed {n} passkey(s) from {profile} and locked {s} session(s)");
             return Ok(());
         }
         Some(Command::Serve) | None => {}

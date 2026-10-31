@@ -137,14 +137,24 @@ fn cookie_token(headers: &HeaderMap) -> Option<String> {
         .filter(|t| t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-pub(crate) fn check_limits(state: &AppState, ip: &str) -> Result<()> {
+/// Refuse `ip` once it has failed too often. Only a public address names one
+/// client (`honey::single_client`), so the per-address bucket skips anything
+/// else — every IPv6 visitor arrives as the Docker gateway — and the global
+/// bucket bounds those. `global: false` skips that bucket, so a stranger's
+/// burst can't lock out a passkey, which they can't guess anyway.
+pub(crate) fn check_limits(state: &AppState, ip: &str, global: bool) -> Result<()> {
     let now = crate::db::now();
-    let (n, oldest) = state.db.failures_since(Some(ip), now - IP_WINDOW_SECS)?;
-    if n >= IP_MAX_FAILURES {
-        let retry = oldest.map_or(IP_WINDOW_SECS, |t| t + IP_WINDOW_SECS - now);
-        return Err(Error::RateLimited {
-            retry_after_secs: retry.max(1) as u32,
-        });
+    if crate::honey::single_client(ip) {
+        let (n, oldest) = state.db.failures_since(Some(ip), now - IP_WINDOW_SECS)?;
+        if n >= IP_MAX_FAILURES {
+            let retry = oldest.map_or(IP_WINDOW_SECS, |t| t + IP_WINDOW_SECS - now);
+            return Err(Error::RateLimited {
+                retry_after_secs: retry.max(1) as u32,
+            });
+        }
+    }
+    if !global {
+        return Ok(());
     }
     let (n, oldest) = state.db.failures_since(None, now - GLOBAL_WINDOW_SECS)?;
     if n >= GLOBAL_MAX_FAILURES {
@@ -157,7 +167,16 @@ pub(crate) fn check_limits(state: &AppState, ip: &str) -> Result<()> {
     Ok(())
 }
 
-async fn verify(hash: String, password: String) -> Result<bool> {
+/// Argon2 takes ~19 MiB a check, so only `state.verifying`'s few run at once
+/// (the droplet has under 1 GB); a burst past that is told to retry.
+async fn verify(state: &AppState, hash: String, password: String) -> Result<bool> {
+    let _permit = state
+        .verifying
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| Error::RateLimited {
+            retry_after_secs: 1,
+        })?;
     tokio::task::spawn_blocking(move || {
         let parsed =
             PasswordHash::new(&hash).map_err(|e| Error::Internal(format!("password hash: {e}")))?;
@@ -188,26 +207,26 @@ pub async fn login(
         state.db.record_failure(&ip)?;
         return Err(Error::Unauthorized);
     }
-    check_limits(&state, &ip)?;
+    check_limits(&state, &ip, true)?;
+    // Counted before hashing, so a parallel burst can't all pass the check.
+    state.db.record_failure(&ip)?;
     // An unknown profile fails exactly like a wrong password.
     let profile = state.config.profile(&body.profile).cloned();
     let Some(profile) =
         profile.filter(|_| !body.password.is_empty() && body.password.len() <= MAX_PASSWORD_BYTES)
     else {
-        state.db.record_failure(&ip)?;
         return Err(Error::Unauthorized);
     };
-    if !verify(profile.password_hash.clone(), body.password).await? {
-        state.db.record_failure(&ip)?;
+    if !verify(&state, profile.password_hash.clone(), body.password).await? {
         tracing::warn!(%ip, profile = %profile.id, "unlock failed");
         return Err(Error::Unauthorized);
     }
+    state.db.clear_failures(&ip)?;
     // A profile with a passkey is not in yet: the password only earns it a
     // challenge, and the session starts when the passkey answers.
     if !state.db.passkeys(&profile.id)?.is_empty() {
         return crate::passkey::challenge_login(&state, &profile.id);
     }
-    state.db.clear_failures(&ip)?;
     start_session(&state, &ip, &profile.id)
 }
 
