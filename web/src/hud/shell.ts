@@ -14,6 +14,7 @@ import { Jarvis, MODELS, type Phase } from "./jarvis";
 import { Listener, type Engine, type ListenerState } from "./listener";
 import { MicLease } from "./micLease";
 import { Speaker } from "./speaker";
+import { showCore } from "./core3d";
 import { findProject, listProjects, ProjectsView, type LocalProject } from "./projects";
 import { SystemsView } from "./systems";
 import { TerminalView, terminalTask } from "./terminal";
@@ -28,6 +29,7 @@ import { appleMapsUrl, shortName } from "./route";
 import { isoSeconds, UsageView } from "./usage";
 
 const DRAWER_KEY = "jarvis.drawer";
+const CORE3D_KEY = "jarvis.core3d";
 
 const PANEL = (id: string, title: string, body: Html) => html`
   <section class="panel" id="${id}">
@@ -75,9 +77,10 @@ const template = (full: boolean) => html`
       ${full ? PANEL("panel-jobs", "Jobs", html`<ul class="rows" id="job-rows"><li class="panel-empty">No jobs dispatched</li></ul>`) : ""}
     </aside>
     <div class="center">
-      <button class="orb" id="orb" data-state="idle" aria-label="Talk to Jarvis">${ORB_SVG}</button>
+      <button class="orb" id="orb" data-state="idle" aria-label="Talk to Jarvis">${ORB_SVG}<div class="orb-gl" id="orb-gl" hidden></div></button>
       <p class="orb-caption" id="orb-caption">Standing by</p>
       <p class="orb-sub" id="orb-sub"></p>
+      <button class="btn-ghost orb-mode" id="orb-mode" aria-pressed="false" title="Show Jarvis in 3D (WebGL)">3D</button>
     </div>
     <aside class="column column-right">
       ${PANEL("panel-systems", "Systems", html`<ul class="rows" id="systems-rows"><li class="panel-empty">Reading the tower…</li></ul>`)}
@@ -313,6 +316,33 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
     raf = requestAnimationFrame(animate);
   };
   raf = requestAnimationFrame(animate);
+
+  // 2D/3D: the same orb button either way; 3D swaps the SVG for a WebGL hologram.
+  const modeBtn = $<HTMLButtonElement>("#orb-mode");
+  const glHost = $<HTMLDivElement>("#orb-gl");
+  let stopCore: (() => void) | null = null;
+  let coreTurn = 0; // drops a hologram that finished loading after 3D was switched off
+  const setCore = async (on: boolean) => {
+    const turn = ++coreTurn;
+    stopCore?.();
+    stopCore = null;
+    modeBtn.setAttribute("aria-pressed", String(on));
+    modeBtn.textContent = on ? "2D" : "3D";
+    orb.classList.toggle("orb-3d", on);
+    glHost.hidden = !on;
+    saveFlag(CORE3D_KEY, on);
+    if (!on) return;
+    try {
+      const stop = await showCore(glHost, () => ({ state: orb.dataset.state ?? "idle", level: speaker.level() }));
+      if (turn === coreTurn) stopCore = stop;
+      else stop();
+    } catch {
+      // No WebGL here: stay in 2D.
+      if (turn === coreTurn) void setCore(false);
+    }
+  };
+  modeBtn.onclick = () => void setCore(modeBtn.getAttribute("aria-pressed") !== "true");
+  if (loadFlag(CORE3D_KEY, false)) void setCore(true);
 
   // ---- the conversation ----------------------------------------------------
   const transcript = new Transcript($("#transcript"));
@@ -814,6 +844,8 @@ export function mountHud(root: HTMLElement, speaker: Speaker, onLocked: () => vo
       watchAlerts.stop();
       stopWhere();
       cancelAnimationFrame(raf);
+      coreTurn++;
+      stopCore?.();
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("dragover", onDragOver);
       window.removeEventListener("dragleave", onDragLeave);
