@@ -15,7 +15,7 @@
     "@fontsource/rajdhani": "^5",
     "d3-geo": "^3.1.1",
     "hls.js": "^1.7.3",
-    "satellite.js": "^6.0.2",
+    "satellite.js": "^7.1.0",
     "three": "^0.186.1",
     "topojson-client": "^3.1.0",
     "us-atlas": "^3.0.1",
