@@ -14,7 +14,7 @@
     "@fontsource/jetbrains-mono": "^5",
     "@fontsource/rajdhani": "^5",
     "d3-geo": "^3.1.1",
-    "hls.js": "^1.7.3",
+    "hls.js": "^1.7.4",
     "satellite.js": "^6.0.2",
     "three": "^0.186.1",
     "topojson-client": "^3.1.0",
