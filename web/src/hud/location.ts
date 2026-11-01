@@ -59,7 +59,7 @@ export function onChange(f: (h: Here | null) => void): () => void {
   return () => listeners.delete(f);
 }
 
-/** For tests. */
+/** Set (or, with null, forget) where he is: tests, and locking the HUD. */
 export function setHere(h: Here | null) {
   set(h);
 }

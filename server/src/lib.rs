@@ -28,14 +28,16 @@ pub mod request_id;
 pub mod route;
 pub mod watches;
 
-use axum::http::{header, HeaderName, HeaderValue};
+use axum::http::{header, HeaderName, HeaderValue, StatusCode};
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::routing::{any, get, post};
 use axum::Router;
 use config::Config;
 use std::time::Duration;
+use tower::limit::ConcurrencyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 #[derive(Clone)]
@@ -47,12 +49,21 @@ pub struct AppState {
     pub intel: std::sync::Arc<intel::Intel>,
     pub local: std::sync::Arc<local::Cache>,
     pub challenges: std::sync::Arc<passkey::Challenges>,
+    /// Password checks allowed at once (`auth::verify`).
+    pub verifying: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
     pub fn new(config: Config, db: db::Db) -> error::Result<Self> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::custom(|a| {
+                if a.previous().len() < 5 && redirect_ok(a.url()) {
+                    a.follow()
+                } else {
+                    a.stop()
+                }
+            }))
             .build()?;
         Ok(AppState {
             config,
@@ -62,6 +73,7 @@ impl AppState {
             intel: std::sync::Arc::default(),
             local: std::sync::Arc::default(),
             challenges: std::sync::Arc::default(),
+            verifying: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
         })
     }
 }
@@ -136,7 +148,6 @@ fn static_site(dir: &std::path::Path) -> Router {
 pub fn app(state: AppState) -> Router {
     let bff = Router::new()
         .route("/bff/v1/{*rest}", any(bff::proxy))
-        .route("/auth/logout", post(auth::logout))
         .route("/web/me", get(auth::me))
         .route("/web/mic", post(mic::mic))
         .route("/web/credits", get(credits::get).post(credits::update))
@@ -213,10 +224,24 @@ pub fn app(state: AppState) -> Router {
         .route("/auth/login", post(auth::login))
         .route("/auth/passkey", post(passkey::login))
         .route("/auth/profiles", get(auth::profiles))
+        // No session needed: a browser whose session already lapsed still
+        // gets its cookie cleared.
+        .route("/auth/logout", post(auth::logout))
         .route("/healthz", get(|| async { "ok" }))
         .merge(bff)
         .layer(from_fn(auth::require_csrf_header))
         .layer(from_fn(auth::require_same_site))
+        // Times the wait for response headers only, so the SSE feed and file
+        // downloads still stream for as long as they run.
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::GATEWAY_TIMEOUT,
+            Duration::from_secs(60),
+        ))
+        .layer(ConcurrencyLimitLayer::new(64))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        ))
         .with_state(state.clone());
 
     let router = match &state.config.static_dir {
@@ -231,6 +256,21 @@ pub fn app(state: AppState) -> Router {
     )
 }
 
+/// Where an outbound fetch may be redirected: an https site named by a
+/// public domain, never an IP literal or a bare name like `api` — so no
+/// redirect can point this server at its own network or the metadata
+/// address. Nothing this server talks to redirects anywhere else.
+fn redirect_ok(url: &reqwest::Url) -> bool {
+    let host = url.host_str().unwrap_or_default();
+    url.scheme() == "https"
+        && host.contains('.')
+        && host.parse::<std::net::Ipv4Addr>().is_err()
+        && !host.starts_with('[')
+        && ![".internal", ".local", ".localhost"]
+            .iter()
+            .any(|t| host.ends_with(t))
+}
+
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -239,4 +279,23 @@ pub fn random_bytes<const N: usize>() -> [u8; N] {
     let mut b = [0u8; N];
     getrandom::fill(&mut b).expect("os randomness");
     b
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn redirects_only_reach_public_https_sites() {
+        for (u, ok) in [
+            ("https://wzmedia.dot.ca.gov/x.jpg", true),
+            ("http://wzmedia.dot.ca.gov/x.jpg", false),
+            ("http://api:8100/v1/keys", false),
+            ("https://api/v1/keys", false),
+            ("http://169.254.169.254/latest/meta-data", false),
+            ("https://127.0.0.1/", false),
+            ("https://[::1]/", false),
+            ("https://metadata.google.internal/", false),
+        ] {
+            assert_eq!(super::redirect_ok(&u.parse().unwrap()), ok, "{u}");
+        }
+    }
 }

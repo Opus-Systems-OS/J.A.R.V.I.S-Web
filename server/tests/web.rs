@@ -365,6 +365,72 @@ async fn wrong_password_is_401_then_429_after_five() {
 }
 
 #[tokio::test]
+async fn a_parallel_burst_cannot_outrun_the_limit() {
+    let h = harness().await;
+    let burst = (0..10).map(|_| send(&h, login_req("nope", "198.51.100.9")));
+    let codes: Vec<StatusCode> = futures_util::future::join_all(burst)
+        .await
+        .into_iter()
+        .map(|r| r.status)
+        .collect();
+    let hashed = codes
+        .iter()
+        .filter(|c| **c == StatusCode::UNAUTHORIZED)
+        .count();
+    assert!(hashed <= 2, "at most two Argon2 checks at once: {codes:?}");
+    assert!(codes
+        .iter()
+        .all(|c| *c == StatusCode::UNAUTHORIZED || *c == StatusCode::TOO_MANY_REQUESTS));
+    let (n, _) = h.db.failures_since(Some("198.51.100.9"), 0).unwrap();
+    assert!(n <= 5, "{n} failures counted, so no more got through");
+}
+
+#[tokio::test]
+async fn the_docker_gateway_shares_only_the_global_bucket() {
+    // Every IPv6 visitor arrives as this one address: five wrong guesses
+    // from one of them must not lock out the rest.
+    let h = harness().await;
+    for _ in 0..6 {
+        let r = send(&h, login_req("nope", "172.18.0.1")).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    }
+    let r = send(&h, login_req(PASSWORD, "172.18.0.1")).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_global_lockout_still_lets_a_passkey_answer() {
+    let h = harness().await;
+    for i in 0..30 {
+        h.db.record_failure(&format!("198.51.100.{}", 100 + i))
+            .unwrap();
+    }
+    let r = send(&h, login_req(PASSWORD, "198.51.100.10")).await;
+    assert_eq!(
+        r.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "passwords are locked"
+    );
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/auth/passkey")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-jarvis", "1")
+        .header("x-forwarded-for", "198.51.100.10")
+        .body(Body::from(
+            json!({ "challenge": "x", "id": "x", "client_data_json": "x",
+                    "authenticator_data": "x", "signature": "x" })
+            .to_string(),
+        ))
+        .unwrap();
+    assert_eq!(
+        send(&h, req).await.status,
+        StatusCode::UNAUTHORIZED,
+        "checked, not refused"
+    );
+}
+
+#[tokio::test]
 async fn login_rejects_unknown_fields_and_needs_the_csrf_header() {
     let h = harness().await;
     let r = send(
@@ -529,6 +595,18 @@ async fn logout_ends_the_session() {
         .contains("Max-Age=0"));
     let r = send(&h, bff(Method::GET, "/bff/v1/me", Some(&cookie), None)).await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    // A lapsed session still gets its cookie cleared.
+    let r = send(&h, bff(Method::POST, "/auth/logout", Some(&cookie), None)).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn api_answers_are_never_cached() {
+    let h = harness().await;
+    let cookie = unlock(&h).await;
+    let r = send(&h, bff(Method::GET, "/web/me", Some(&cookie), None)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.headers[header::CACHE_CONTROL], "no-store");
 }
 
 #[tokio::test]

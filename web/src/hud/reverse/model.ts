@@ -327,6 +327,15 @@ export function loadHistory(): Run[] {
   }
 }
 
+/** Drop every saved report (the HUD was locked; the next person shouldn't see them). */
+export function forgetAll(): void {
+  try {
+    localStorage.removeItem(HISTORY_KEY);
+  } catch {
+    /* fine */
+  }
+}
+
 /** Newest first, capped; returns what is now kept. */
 export function remember(run: Run, history: Run[]): Run[] {
   const trimmed: Run = {

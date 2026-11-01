@@ -183,7 +183,7 @@ pub async fn login(
     Json(body): Json<LoginBody>,
 ) -> Result<Response> {
     let ip = client_ip(&headers);
-    check_limits(&state, &ip)?;
+    check_limits(&state, &ip, false)?;
     let verified = (|| {
         let pending = take(&state, &body.challenge, Kind::Login)?;
         let key = state.db.passkey_key(&pending.profile, &body.id).ok()??;

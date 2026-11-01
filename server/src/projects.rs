@@ -398,9 +398,13 @@ pub async fn file(
     Ok(res)
 }
 
-/// A path inside a repo: relative, no empty, `.`, `..` or `.git` segments.
+/// A path inside a repo: relative, no empty, `.`, `..` or `.git` segments,
+/// and not under `.github/` — Jarvis's tools write here, and a page he reads
+/// could steer him into planting a workflow that runs with the repo's secrets.
 pub fn path_ok(path: &str) -> bool {
+    let top = path.split('/').next().unwrap_or_default();
     (1..=MAX_PATH).contains(&path.len())
+        && !top.eq_ignore_ascii_case(".github")
         && !path.chars().any(char::is_control)
         && path
             .split('/')
@@ -878,8 +882,10 @@ mod tests {
     #[test]
     fn repo_paths_stay_inside_the_repo() {
         assert!(path_ok("docs/spec.md"));
-        assert!(path_ok(".github/workflows/ci.yml"));
+        assert!(path_ok("docs/.github/notes.md"));
         for bad in [
+            ".github/workflows/ci.yml",
+            ".GitHub/dependabot.yml",
             "",
             "/etc/x",
             "docs/",
